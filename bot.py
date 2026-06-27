@@ -8,7 +8,7 @@ import json
 
 # --- আপনার কনফিগারেশন ---
 API_KEY = "fe_oa_c1b46d08269cb2874f0e82fdecb91d79dde771dcbfc00280"
-BASE_URL = "https://cc.freemodel.dev"
+BASE_URL = "https://api.freemodel.dev"
 BOT_TOKEN = "8836794590:AAGDA3S4ePZI1MTHWZM9ka1NO_BdddCFp20"
 ALLOWED_USER_ID = 5062314716 # আপনার টেলিগ্রাম ইউজার আইডি
 
