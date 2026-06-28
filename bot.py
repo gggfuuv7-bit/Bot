@@ -74,7 +74,9 @@ def handle_all_messages(message):
             "You can generate multiple <file> blocks if needed. Do NOT use markdown code blocks (```) inside or outside the <file> tags."
         )
 
+        # একদম ফ্রেশ API URL (কোনো ব্র্যাকেট বা মার্কডাউন লিংক নেই)
         api_url = f"[https://api.cloudflare.com/client/v4/accounts/](https://api.cloudflare.com/client/v4/accounts/){CF_ACCOUNT_ID}/ai/run/{CF_MODEL}"
+        
         headers = {
             "Authorization": f"Bearer {CF_API_TOKEN}",
             "Content-Type": "application/json"
@@ -119,7 +121,7 @@ def handle_all_messages(message):
                         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                             for filename, content in file_matches:
                                 content = content.strip()
-                                # মার্কডাউন রিমুভ লজিক নিরাপদে আপডেট করা হয়েছে
+                                # মার্কডাউন রিমুভ লজিক
                                 if content.startswith("```"):
                                     content = content.split('\n', 1)[-1]
                                 if content.endswith("```"):
@@ -136,7 +138,7 @@ def handle_all_messages(message):
                         filename = file_matches[0][0]
                         content = file_matches[0][1].strip()
                         
-                        # মার্কডাউন রিমুভ লজিক নিরাপদে আপডেট করা হয়েছে
+                        # মার্কডাউন রিমুভ লজিক
                         if content.startswith("```"):
                             content = content.split('\n', 1)[-1]
                         if content.endswith("```"):
