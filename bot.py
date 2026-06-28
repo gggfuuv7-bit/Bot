@@ -5,20 +5,19 @@ import io
 import requests
 import time
 import json
+import re # ট্যাগ খুঁজে বের করার জন্য নতুন লাইব্রেরি
 from flask import Flask
 from threading import Thread
 
 # --- কনফিগারেশন ---
-# Render-এর Environment Variable থেকে টোকেনগুলো অটোমেটিক নিয়ে নেবে।
 BOT_TOKEN = os.environ.get("BOT_TOKEN") 
-ALLOWED_USER_ID = 5062314716 # আপনার দেওয়া টেলিগ্রাম ইউজার আইডি
+ALLOWED_USER_ID = 5062314716 
 
 # --- Cloudflare AI কনফিগারেশন ---
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID") 
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN")   
-CF_MODEL = "@cf/zai-org/glm-5.2" # Cloudflare-এর GLM 5.2 মডেল
+CF_MODEL = "@cf/zai-org/glm-5.2" 
 
-# বট ইনিশিয়ালাইজেশন
 bot = telebot.TeleBot(BOT_TOKEN)
 
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
@@ -35,7 +34,7 @@ def send_full_output(chat_id, text):
         bot.send_message(chat_id, text)
     else:
         file_stream = io.BytesIO(text.encode('utf-8'))
-        file_stream.name = "full_response.txt"
+        file_stream.name = "response.txt"
         bot.send_document(chat_id, file_stream, caption="Output is too long, sending as file.")
 
 @bot.message_handler(content_types=['text', 'document'])
@@ -49,7 +48,6 @@ def handle_all_messages(message):
     bot.send_message(chat_id, "Processing your request with Cloudflare AI... Please wait.")
 
     try:
-        # ফাইল থেকে টেক্সট বের করা
         if message.document:
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
@@ -67,9 +65,16 @@ def handle_all_messages(message):
                             with z.open(zip_info) as extracted_file:
                                 prompt_text += process_text_file(extracted_file.read(), zip_info.filename)
 
-        # --- Cloudflare API Call ---
-        api_url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/{CF_MODEL}"
-        
+        # --- এআই-কে ফাইল বানানোর স্পেশাল ইন্সট্রাকশন দেওয়া হলো ---
+        system_instruction = (
+            "You are an expert AI coding assistant. "
+            "CRITICAL INSTRUCTION: If the user asks for a specific file format (e.g., .dart, .html, .py), "
+            "or asks for multiple files, or a ZIP file, you MUST output the files using this exact XML structure:\n"
+            '<file name="exact_filename.extension">\n[write the complete file content here]\n</file>\n'
+            "You can generate multiple <file> blocks if needed. Do NOT use markdown code blocks (```) inside or outside the <file> tags."
+        )
+
+        api_url = f"[https://api.cloudflare.com/client/v4/accounts/](https://api.cloudflare.com/client/v4/accounts/){CF_ACCOUNT_ID}/ai/run/{CF_MODEL}"
         headers = {
             "Authorization": f"Bearer {CF_API_TOKEN}",
             "Content-Type": "application/json"
@@ -77,65 +82,50 @@ def handle_all_messages(message):
         
         payload = {
             "messages": [
-                {"role": "system", "content": "You are a helpful AI coding assistant."},
+                {"role": "system", "content": system_instruction},
                 {"role": "user", "content": prompt_text}
             ]
         }
 
-        response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+        response = requests.post(api_url, headers=headers, json=payload, timeout=300)
 
-        # --- ইউনিভার্সাল পার্সার (Universal Parser) ---
         if response.status_code == 200:
             result_data = response.json()
             
             try:
-                # Cloudflare ফরম্যাট চেক
-                if "result" in result_data and "response" in result_data["result"]:
-                    final_response_text = result_data['result']['response']
+                final_response_text = ""
                 
-                # OpenAI / GLM ফরম্যাট চেক
+                # Cloudflare/OpenAI/Claude রেসপন্স এক্সট্র্যাক্ট করা
+                if "result" in result_data and isinstance(result_data["result"], dict) and "choices" in result_data["result"]:
+                    final_response_text = result_data['result']['choices'][0]['message']['content']
+                elif "result" in result_data and isinstance(result_data["result"], dict) and "response" in result_data["result"]:
+                    final_response_text = result_data['result']['response']
                 elif "choices" in result_data:
                     final_response_text = result_data['choices'][0]['message']['content']
-                
-                # Anthropic / Claude / G0I.AI ফরম্যাট চেক
                 elif "content" in result_data:
                     final_response_text = result_data['content'][0]['text']
-                
-                # অজানা ফরম্যাট হলে পুরো ডেটা প্রিন্ট করবে
                 else:
-                    final_response_text = f"অজানা এপিআই ফরম্যাট! সার্ভার থেকে যা এসেছে:\n{json.dumps(result_data, indent=2)[:1000]}"
+                    final_response_text = f"Unknown API Format:\n{json.dumps(result_data, indent=2)[:1000]}"
                 
-                send_full_output(chat_id, final_response_text)
+                # --- ফাইল এবং ZIP পার্সিং লজিক ---
+                file_matches = re.findall(r'<file name="([^"]+)">([\s\S]*?)</file>', final_response_text, re.IGNORECASE)
                 
-            except Exception as e:
-                bot.send_message(chat_id, f"রেসপন্স পার্স করতে সমস্যা হয়েছে: {e}\nসার্ভারের ডেটা: {result_data}")
-                
-        else:
-            bot.send_message(chat_id, f"API Error: {response.status_code}\n{response.text}")
+                if file_matches:
+                    user_wants_zip = 'zip' in prompt_text.lower()
+                    
+                    if len(file_matches) > 1 or user_wants_zip:
+                        # একাধিক ফাইল বা জিপ চাইলে ZIP ফাইল তৈরি করবে
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                            for filename, content in file_matches:
+                                content = content.strip()
+                                if content.startswith("
+http://googleusercontent.com/immersive_entry_chip/0
+http://googleusercontent.com/immersive_entry_chip/1
+http://googleusercontent.com/immersive_entry_chip/2
+http://googleusercontent.com/immersive_entry_chip/3
 
-    except requests.exceptions.Timeout:
-        bot.send_message(chat_id, "Error: Cloudflare AI took too long to respond (Timeout).")
-    except Exception as e:
-        bot.send_message(chat_id, f"An error occurred: {str(e)}")
-
-# --- Render 24/7 Web Server ---
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is securely running 24/7 with Cloudflare AI!"
-
-def run_bot():
-    while True:
-        try:
-            bot.polling(none_stop=True, interval=1, timeout=60)
-        except Exception as e:
-            time.sleep(3)
-
-if __name__ == "__main__":
-    # বটকে ব্যাকগ্রাউন্ডে চালানো
-    Thread(target=run_bot, daemon=True).start()
-    
-    # ওয়েব সার্ভার মেইন ফোকাসে
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+**কোডটি যেভাবে টেস্ট করবেন:**
+গিটহাবে আপডেট হওয়ার পর বটকে ২ ভাবে প্রম্পট দিয়ে দেখতে পারেন:
+১. `"Create a modern login screen in HTML. I need it in a .html file."` (বট সরাসরি একটি `.html` ফাইল পাঠাবে)।
+২. `"Create an e-commerce site with HTML, CSS, and JS. Zip them and give me."` (বট ফাইলগুলো তৈরি করে একটি `.zip` ফোল্ডার হিসেবে আপনাকে পাঠাবে)।
