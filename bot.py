@@ -13,7 +13,7 @@ ALLOWED_USER_ID = 5062314716 # আপনার টেলিগ্রাম ই�
 
 # --- Cloudflare AI কনফিগারেশন ---
 CF_ACCOUNT_ID = "f0a048a06a23cafa16b54833cc050885" # Cloudflare ড্যাশবোর্ড থেকে পাবেন
-CF_API_TOKEN = "cfut_apBQSVOAQRcM3FpskqwXfbtsu2atmDEHVBu0nuNc171f7a0e"   # Cloudflare ড্যাশবোর্ড থেকে তৈরি করে নেবেন
+CF_API_TOKEN = "cfut_GqVPHg0yXci6B78rZH9CqVUS9nQD5Y481sABGwJd25a8eef7"   # Cloudflare ড্যাশবোর্ড থেকে তৈরি করে নেবেন
 CF_MODEL = "@cf/zai-org/glm-5.2" # মডেলের নাম
 
 bot = telebot.TeleBot(BOT_TOKEN)
