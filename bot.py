@@ -14,7 +14,7 @@ ALLOWED_USER_ID = 5062314716 # আপনার টেলিগ্রাম ই�
 # --- Cloudflare AI কনফিগারেশন ---
 CF_ACCOUNT_ID = "f0a048a06a23cafa16b54833cc050885" # Cloudflare ড্যাশবোর্ড থেকে পাবেন
 CF_API_TOKEN = "cfut_apBQSVOAQRcM3FpskqwXfbtsu2atmDEHVBu0nuNc171f7a0e"   # Cloudflare ড্যাশবোর্ড থেকে তৈরি করে নেবেন
-CF_MODEL = "@cf/zai-org/glm-5.2" # GLM মডেল (বা Cloudflare-এর সাপোর্ট করা অন্য যেকোনো মডেল)
+CF_MODEL = "@cf/zai-org/glm-5.2" # মডেলের নাম
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -46,7 +46,6 @@ def handle_all_messages(message):
     bot.send_message(chat_id, "Processing your request with Cloudflare AI... Please wait.")
 
     try:
-        # ফাইল থেকে টেক্সট বের করা
         if message.document:
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
@@ -103,14 +102,17 @@ app = Flask(__name__)
 def home():
     return "Bot is running perfectly with Cloudflare API!"
 
-def run_server():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-
-if __name__ == "__main__":
-    Thread(target=run_server).start()
+def run_bot():
     while True:
         try:
             bot.polling(none_stop=True, interval=1, timeout=60)
         except Exception as e:
             time.sleep(3)
+
+if __name__ == "__main__":
+    # বটকে ব্যাকগ্রাউন্ডে পাঠানো হলো
+    Thread(target=run_bot, daemon=True).start()
+    
+    # ওয়েব সার্ভার মেইন ফোকাসে রাখা হলো, যাতে Render পোর্ট খুঁজে পায়
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
