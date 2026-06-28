@@ -5,7 +5,7 @@ import io
 import requests
 import time
 import json
-import re # ট্যাগ খুঁজে বের করার জন্য নতুন লাইব্রেরি
+import re
 from flask import Flask
 from threading import Thread
 
@@ -119,13 +119,63 @@ def handle_all_messages(message):
                         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                             for filename, content in file_matches:
                                 content = content.strip()
-                                if content.startswith("
-http://googleusercontent.com/immersive_entry_chip/0
-http://googleusercontent.com/immersive_entry_chip/1
-http://googleusercontent.com/immersive_entry_chip/2
-http://googleusercontent.com/immersive_entry_chip/3
+                                # মার্কডাউন রিমুভ লজিক নিরাপদে আপডেট করা হয়েছে
+                                if content.startswith("```"):
+                                    content = content.split('\n', 1)[-1]
+                                if content.endswith("```"):
+                                    content = content.rsplit('\n', 1)[0]
+                                
+                                zip_file.writestr(filename, content.strip())
+                        
+                        zip_buffer.seek(0)
+                        zip_buffer.name = "project_files.zip"
+                        bot.send_document(chat_id, zip_buffer, caption="Here is your ZIP file containing the requested code.")
+                        
+                    else:
+                        # একটি নির্দিষ্ট ফাইল চাইলে সেই ফাইলটিই দেবে
+                        filename = file_matches[0][0]
+                        content = file_matches[0][1].strip()
+                        
+                        # মার্কডাউন রিমুভ লজিক নিরাপদে আপডেট করা হয়েছে
+                        if content.startswith("```"):
+                            content = content.split('\n', 1)[-1]
+                        if content.endswith("```"):
+                            content = content.rsplit('\n', 1)[0]
+                            
+                        file_buffer = io.BytesIO(content.strip().encode('utf-8'))
+                        file_buffer.name = filename
+                        bot.send_document(chat_id, file_buffer, caption=f"Here is your {filename} file.")
+                else:
+                    # যদি ইউজার কোনো ফাইল না চায়, তবে আগের মতোই সাধারণ মেসেজ দেবে
+                    send_full_output(chat_id, final_response_text)
+                
+            except Exception as e:
+                bot.send_message(chat_id, f"Parsing Error: {e}\nData: {str(result_data)[:500]}")
+                
+        else:
+            bot.send_message(chat_id, f"API Error: {response.status_code}\n{response.text}")
 
-**কোডটি যেভাবে টেস্ট করবেন:**
-গিটহাবে আপডেট হওয়ার পর বটকে ২ ভাবে প্রম্পট দিয়ে দেখতে পারেন:
-১. `"Create a modern login screen in HTML. I need it in a .html file."` (বট সরাসরি একটি `.html` ফাইল পাঠাবে)।
-২. `"Create an e-commerce site with HTML, CSS, and JS. Zip them and give me."` (বট ফাইলগুলো তৈরি করে একটি `.zip` ফোল্ডার হিসেবে আপনাকে পাঠাবে)।
+    except requests.exceptions.Timeout:
+        bot.send_message(chat_id, "Error: The AI took too long to generate this request (Timeout after 5 mins).")
+    except Exception as e:
+        bot.send_message(chat_id, f"An error occurred: {str(e)}")
+
+# --- Render 24/7 Web Server ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is securely running 24/7 with Zip & File Formatting Support!"
+
+def run_bot():
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=1, timeout=60)
+        except Exception as e:
+            time.sleep(3)
+
+if __name__ == "__main__":
+    Thread(target=run_bot, daemon=True).start()
+    
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
