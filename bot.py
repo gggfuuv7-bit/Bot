@@ -65,20 +65,19 @@ def handle_all_messages(message):
                             with z.open(zip_info) as extracted_file:
                                 prompt_text += process_text_file(extracted_file.read(), zip_info.filename)
 
-        # --- এআই-কে ফাইল বানানোর স্পেশাল ইন্সট্রাকশন দেওয়া হলো ---
         system_instruction = (
             "You are an expert AI coding assistant. "
             "CRITICAL INSTRUCTION: If the user asks for a specific file format (e.g., .dart, .html, .py), "
             "or asks for multiple files, or a ZIP file, you MUST output the files using this exact XML structure:\n"
             '<file name="exact_filename.extension">\n[write the complete file content here]\n</file>\n'
-            "You can generate multiple <file> blocks if needed. Do NOT use markdown code blocks (```) inside or outside the <file> tags."
+            "You can generate multiple <file> blocks if needed. Do NOT use markdown code blocks inside or outside the <file> tags."
         )
 
-        # একদম ফ্রেশ API URL (কোনো ব্র্যাকেট বা মার্কডাউন লিংক নেই)
-        api_url = f"[https://api.cloudflare.com/client/v4/accounts/](https://api.cloudflare.com/client/v4/accounts/){CF_ACCOUNT_ID}/ai/run/{CF_MODEL}"
+        # URL তৈরি করার সবচেয়ে নিরাপদ পদ্ধতি (ভুলেও এখানে কোনো লিংক পেস্ট করবেন না)
+        api_url = "https://api.cloudflare.com/client/v4/accounts/" + str(CF_ACCOUNT_ID) + "/ai/run/" + str(CF_MODEL)
         
         headers = {
-            "Authorization": f"Bearer {CF_API_TOKEN}",
+            "Authorization": "Bearer " + str(CF_API_TOKEN),
             "Content-Type": "application/json"
         }
         
@@ -97,7 +96,6 @@ def handle_all_messages(message):
             try:
                 final_response_text = ""
                 
-                # Cloudflare/OpenAI/Claude রেসপন্স এক্সট্র্যাক্ট করা
                 if "result" in result_data and isinstance(result_data["result"], dict) and "choices" in result_data["result"]:
                     final_response_text = result_data['result']['choices'][0]['message']['content']
                 elif "result" in result_data and isinstance(result_data["result"], dict) and "response" in result_data["result"]:
@@ -109,46 +107,43 @@ def handle_all_messages(message):
                 else:
                     final_response_text = f"Unknown API Format:\n{json.dumps(result_data, indent=2)[:1000]}"
                 
-                # --- ফাইল এবং ZIP পার্সিং লজিক ---
                 file_matches = re.findall(r'<file name="([^"]+)">([\s\S]*?)</file>', final_response_text, re.IGNORECASE)
+                
+                # সিনট্যাক্স এরর এড়ানোর জন্য সিক্রেট ট্রিক
+                MD_TICKS = chr(96) * 3 
                 
                 if file_matches:
                     user_wants_zip = 'zip' in prompt_text.lower()
                     
                     if len(file_matches) > 1 or user_wants_zip:
-                        # একাধিক ফাইল বা জিপ চাইলে ZIP ফাইল তৈরি করবে
                         zip_buffer = io.BytesIO()
                         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                             for filename, content in file_matches:
                                 content = content.strip()
-                                # মার্কডাউন রিমুভ লজিক
-                                if content.startswith("```"):
+                                if content.startswith(MD_TICKS):
                                     content = content.split('\n', 1)[-1]
-                                if content.endswith("```"):
+                                if content.endswith(MD_TICKS):
                                     content = content.rsplit('\n', 1)[0]
                                 
                                 zip_file.writestr(filename, content.strip())
                         
                         zip_buffer.seek(0)
                         zip_buffer.name = "project_files.zip"
-                        bot.send_document(chat_id, zip_buffer, caption="Here is your ZIP file containing the requested code.")
+                        bot.send_document(chat_id, zip_buffer, caption="Here is your ZIP file.")
                         
                     else:
-                        # একটি নির্দিষ্ট ফাইল চাইলে সেই ফাইলটিই দেবে
                         filename = file_matches[0][0]
                         content = file_matches[0][1].strip()
                         
-                        # মার্কডাউন রিমুভ লজিক
-                        if content.startswith("```"):
+                        if content.startswith(MD_TICKS):
                             content = content.split('\n', 1)[-1]
-                        if content.endswith("```"):
+                        if content.endswith(MD_TICKS):
                             content = content.rsplit('\n', 1)[0]
                             
                         file_buffer = io.BytesIO(content.strip().encode('utf-8'))
                         file_buffer.name = filename
                         bot.send_document(chat_id, file_buffer, caption=f"Here is your {filename} file.")
                 else:
-                    # যদি ইউজার কোনো ফাইল না চায়, তবে আগের মতোই সাধারণ মেসেজ দেবে
                     send_full_output(chat_id, final_response_text)
                 
             except Exception as e:
@@ -158,11 +153,10 @@ def handle_all_messages(message):
             bot.send_message(chat_id, f"API Error: {response.status_code}\n{response.text}")
 
     except requests.exceptions.Timeout:
-        bot.send_message(chat_id, "Error: The AI took too long to generate this request (Timeout after 5 mins).")
+        bot.send_message(chat_id, "Error: The AI took too long (Timeout after 5 mins).")
     except Exception as e:
         bot.send_message(chat_id, f"An error occurred: {str(e)}")
 
-# --- Render 24/7 Web Server ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -178,6 +172,5 @@ def run_bot():
 
 if __name__ == "__main__":
     Thread(target=run_bot, daemon=True).start()
-    
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
