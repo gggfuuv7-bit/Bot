@@ -4,20 +4,19 @@ import zipfile
 import io
 import requests
 import time
+import json
 from flask import Flask
 from threading import Thread
 
-# --- কনফিগারেশন (Environment Variables) ---
-# এই মানগুলো এখন Render-এর ড্যাশবোর্ড থেকে অটোমেটিক নিয়ে নেবে। 
-# গিটহাবে কোনো টোকেন দেখা যাবে না, তাই হ্যাক হওয়ারও ভয় নেই!
-
+# --- কনফিগারেশন ---
+# Render-এর Environment Variable থেকে টোকেনগুলো অটোমেটিক নিয়ে নেবে।
 BOT_TOKEN = os.environ.get("BOT_TOKEN") 
-ALLOWED_USER_ID = 5062314716 # এখানে শুধু আপনার টেলিগ্রাম ইউজার আইডি বসিয়ে দিন
+ALLOWED_USER_ID = 5062314716 # আপনার দেওয়া টেলিগ্রাম ইউজার আইডি
 
 # --- Cloudflare AI কনফিগারেশন ---
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID") 
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN")   
-CF_MODEL = "@cf/zai-org/glm-5.2" # Cloudflare-এ GLM 5.2 মডেল
+CF_MODEL = "@cf/zai-org/glm-5.2" # Cloudflare-এর GLM 5.2 মডেল
 
 # বট ইনিশিয়ালাইজেশন
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -47,9 +46,10 @@ def handle_all_messages(message):
     chat_id = message.chat.id
     prompt_text = message.text or message.caption or "Analyze the attached file(s)."
     
-    bot.send_message(chat_id, "Processing your request with Cloudflare AI (GLM-5.2)... Please wait.")
+    bot.send_message(chat_id, "Processing your request with Cloudflare AI... Please wait.")
 
     try:
+        # ফাইল থেকে টেক্সট বের করা
         if message.document:
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
@@ -84,13 +84,32 @@ def handle_all_messages(message):
 
         response = requests.post(api_url, headers=headers, json=payload, timeout=60)
 
+        # --- ইউনিভার্সাল পার্সার (Universal Parser) ---
         if response.status_code == 200:
             result_data = response.json()
-            if result_data.get("success"):
-                final_response_text = result_data['result']['response']
+            
+            try:
+                # Cloudflare ফরম্যাট চেক
+                if "result" in result_data and "response" in result_data["result"]:
+                    final_response_text = result_data['result']['response']
+                
+                # OpenAI / GLM ফরম্যাট চেক
+                elif "choices" in result_data:
+                    final_response_text = result_data['choices'][0]['message']['content']
+                
+                # Anthropic / Claude / G0I.AI ফরম্যাট চেক
+                elif "content" in result_data:
+                    final_response_text = result_data['content'][0]['text']
+                
+                # অজানা ফরম্যাট হলে পুরো ডেটা প্রিন্ট করবে
+                else:
+                    final_response_text = f"অজানা এপিআই ফরম্যাট! সার্ভার থেকে যা এসেছে:\n{json.dumps(result_data, indent=2)[:1000]}"
+                
                 send_full_output(chat_id, final_response_text)
-            else:
-                bot.send_message(chat_id, f"Cloudflare AI Error: {result_data.get('errors')}")
+                
+            except Exception as e:
+                bot.send_message(chat_id, f"রেসপন্স পার্স করতে সমস্যা হয়েছে: {e}\nসার্ভারের ডেটা: {result_data}")
+                
         else:
             bot.send_message(chat_id, f"API Error: {response.status_code}\n{response.text}")
 
@@ -114,9 +133,9 @@ def run_bot():
             time.sleep(3)
 
 if __name__ == "__main__":
-    # বটকে ব্যাকগ্রাউন্ডে পাঠানো হলো
+    # বটকে ব্যাকগ্রাউন্ডে চালানো
     Thread(target=run_bot, daemon=True).start()
     
-    # ওয়েব সার্ভার মেইন ফোকাসে রাখা হলো, যাতে Render সাথে সাথে পোর্ট খুঁজে পায়
+    # ওয়েব সার্ভার মেইন ফোকাসে
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
