@@ -4,7 +4,6 @@ import base64
 import zipfile
 import io
 import requests
-import json
 import time
 from flask import Flask
 from threading import Thread
@@ -42,7 +41,7 @@ def handle_all_messages(message):
     chat_id = message.chat.id
     prompt_text = message.text or message.caption or "Analyze this file(s) and provide the complete code/output."
     
-    bot.send_message(chat_id, "Processing your request with Claude... Please wait.")
+    bot.send_message(chat_id, "Processing your request with GLM... Please wait.")
     content_blocks = []
 
     try:
@@ -50,7 +49,7 @@ def handle_all_messages(message):
             file_info = bot.get_file(message.photo[-1].file_id)
             downloaded_file = bot.download_file(file_info.file_path)
             image_base64 = base64.b64encode(downloaded_file).decode('utf-8')
-            content_blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}})
+            content_blocks.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}})
 
         elif message.document:
             file_info = bot.get_file(message.document.file_id)
@@ -59,9 +58,9 @@ def handle_all_messages(message):
             file_ext = os.path.splitext(file_name)[1]
 
             if file_ext in ['.jpg', '.jpeg', '.png']:
-                media_type = f"image/{'jpeg' if file_ext in ['.jpg', '.jpeg'] else 'png'}"
+                media_type = 'jpeg' if file_ext in ['.jpg', '.jpeg'] else 'png'
                 image_base64 = base64.b64encode(downloaded_file).decode('utf-8')
-                content_blocks.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_base64}})
+                content_blocks.append({"type": "image_url", "image_url": {"url": f"data:image/{media_type};base64,{image_base64}"}})
             
             elif file_ext in TEXT_EXTENSIONS:
                 prompt_text += process_text_file(downloaded_file, file_name)
@@ -74,19 +73,18 @@ def handle_all_messages(message):
                             with z.open(zip_info) as extracted_file:
                                 prompt_text += process_text_file(extracted_file.read(), zip_info.filename)
 
-        content_blocks.append({"type": "text", "text": prompt_text})
+        content_blocks.insert(0, {"type": "text", "text": prompt_text})
         
-        # --- API Call using Requests (Stable for Proxies) ---
-        api_url = f"{BASE_URL}/v1/messages"
+        # --- API Call using Requests (OpenAI format for GLM) ---
+        api_url = f"{BASE_URL}/v1/chat/completions"
         headers = {
-            "x-api-key": API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
         }
         
+        # মডেলের নাম GLM দেওয়া হয়েছে
         payload = {
-            "model": "claude-haiku-4-5-20251001", 
-            "max_tokens": 8192,
+            "model": "glm-5.2", 
             "messages": [{"role": "user", "content": content_blocks}]
         }
 
@@ -94,7 +92,7 @@ def handle_all_messages(message):
 
         if response.status_code == 200:
             result_data = response.json()
-            final_response_text = result_data['content'][0]['text']
+            final_response_text = result_data['choices'][0]['message']['content']
             send_full_output(chat_id, final_response_text)
         else:
             bot.send_message(chat_id, f"API Error: {response.status_code}\n{response.text}")
@@ -109,7 +107,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running perfectly!"
+    return "Bot is running perfectly with GLM!"
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
