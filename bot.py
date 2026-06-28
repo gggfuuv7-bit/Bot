@@ -7,15 +7,19 @@ import time
 from flask import Flask
 from threading import Thread
 
-# --- কনফিগারেশন ---
-BOT_TOKEN = "8836794590:AAGDA3S4ePZI1MTHWZM9ka1NO_BdddCFp20" # আপনার Bot Token দিন
-ALLOWED_USER_ID = 5062314716 # আপনার টেলিগ্রাম ইউজার আইডি দিন
+# --- কনফিগারেশন (Environment Variables) ---
+# এই মানগুলো এখন Render-এর ড্যাশবোর্ড থেকে অটোমেটিক নিয়ে নেবে। 
+# গিটহাবে কোনো টোকেন দেখা যাবে না, তাই হ্যাক হওয়ারও ভয় নেই!
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN") 
+ALLOWED_USER_ID = 5062314716 # এখানে শুধু আপনার টেলিগ্রাম ইউজার আইডি বসিয়ে দিন
 
 # --- Cloudflare AI কনফিগারেশন ---
-CF_ACCOUNT_ID = "f0a048a06a23cafa16b54833cc050885" # Cloudflare ড্যাশবোর্ড থেকে পাবেন
-CF_API_TOKEN = "cfut_GqVPHg0yXci6B78rZH9CqVUS9nQD5Y481sABGwJd25a8eef7"   # Cloudflare ড্যাশবোর্ড থেকে তৈরি করে নেবেন
-CF_MODEL = "@cf/zai-org/glm-5.2" # মডেলের নাম
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID") 
+CF_API_TOKEN = os.environ.get("CF_API_TOKEN")   
+CF_MODEL = "@cf/zai-org/glm-5.2" # Cloudflare-এ GLM 5.2 মডেল
 
+# বট ইনিশিয়ালাইজেশন
 bot = telebot.TeleBot(BOT_TOKEN)
 
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
@@ -43,7 +47,7 @@ def handle_all_messages(message):
     chat_id = message.chat.id
     prompt_text = message.text or message.caption or "Analyze the attached file(s)."
     
-    bot.send_message(chat_id, "Processing your request with Cloudflare AI... Please wait.")
+    bot.send_message(chat_id, "Processing your request with Cloudflare AI (GLM-5.2)... Please wait.")
 
     try:
         if message.document:
@@ -100,7 +104,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running perfectly with Cloudflare API!"
+    return "Bot is securely running 24/7 with Cloudflare AI!"
 
 def run_bot():
     while True:
@@ -113,6 +117,6 @@ if __name__ == "__main__":
     # বটকে ব্যাকগ্রাউন্ডে পাঠানো হলো
     Thread(target=run_bot, daemon=True).start()
     
-    # ওয়েব সার্ভার মেইন ফোকাসে রাখা হলো, যাতে Render পোর্ট খুঁজে পায়
+    # ওয়েব সার্ভার মেইন ফোকাসে রাখা হলো, যাতে Render সাথে সাথে পোর্ট খুঁজে পায়
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
