@@ -3,15 +3,20 @@ import telebot
 import base64
 import zipfile
 import io
-import requests
 import json
+import time
+from anthropic import Anthropic
+from flask import Flask
+from threading import Thread
 
 # --- কনফিগারেশন ---
 API_KEY = "fe_oa_c1b46d08269cb2874f0e82fdecb91d79dde771dcbfc00280"
 BASE_URL = "https://cc.freemodel.dev"
 BOT_TOKEN = "8836794590:AAGDA3S4ePZI1MTHWZM9ka1NO_BdddCFp20"
-ALLOWED_USER_ID = 5062314716 # আপনার টেলিগ্রাম ইউজার আইডি দিন
+ALLOWED_USER_ID = 5062314716 # আপনার টেলিগ্রাম ইউজার আইডি
 
+# ক্লায়েন্ট সেটআপ
+client = Anthropic(api_key=API_KEY, base_url=BASE_URL)
 bot = telebot.TeleBot(BOT_TOKEN)
 
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
@@ -33,8 +38,76 @@ def send_full_output(chat_id, text):
 
 @bot.message_handler(content_types=['text', 'document', 'photo'])
 def handle_all_messages(message):
-    print("\n--- New Message Received ---")
     if message.from_user.id != ALLOWED_USER_ID:
+        return
+
+    chat_id = message.chat.id
+    prompt_text = message.text or message.caption or "Analyze this file(s) and provide the complete code/output."
+    
+    bot.send_message(chat_id, "Processing your request with Claude... Please wait.")
+    
+    content_blocks = []
+
+    try:
+        if message.photo:
+            file_info = bot.get_file(message.photo[-1].file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            image_base64 = base64.b64encode(downloaded_file).decode('utf-8')
+            content_blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}})
+
+        elif message.document:
+            file_info = bot.get_file(message.document.file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            file_name = message.document.file_name.lower()
+            file_ext = os.path.splitext(file_name)[1]
+
+            if file_ext in ['.jpg', '.jpeg', '.png']:
+                media_type = f"image/{'jpeg' if file_ext in ['.jpg', '.jpeg'] else 'png'}"
+                image_base64 = base64.b64encode(downloaded_file).decode('utf-8')
+                content_blocks.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_base64}})
+            
+            elif file_ext in TEXT_EXTENSIONS:
+                prompt_text += process_text_file(downloaded_file, file_name)
+            
+            elif file_ext == '.zip':
+                prompt_text += "\n\n--- Extracted ZIP Contents ---\n"
+                with zipfile.ZipFile(io.BytesIO(downloaded_file)) as z:
+                    for zip_info in z.infolist():
+                        if not zip_info.is_dir() and os.path.splitext(zip_info.filename)[1].lower() in TEXT_EXTENSIONS:
+                            with z.open(zip_info) as extracted_file:
+                                prompt_text += process_text_file(extracted_file.read(), zip_info.filename)
+
+        content_blocks.append({"type": "text", "text": prompt_text})
+        
+        # Anthropic API কল
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=8192,
+            messages=[{"role": "user", "content": content_blocks}]
+        )
+
+        send_full_output(chat_id, response.content[0].text)
+
+    except Exception as e:
+        bot.send_message(chat_id, f"An error occurred: {str(e)}")
+
+# Flask Web Server
+app = Flask(__name__)
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_server():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+if __name__ == "__main__":
+    Thread(target=run_server).start()
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=1, timeout=60)
+        except Exception as e:
+            time.sleep(3)    if message.from_user.id != ALLOWED_USER_ID:
         print("Unauthorized user tried to access the bot.")
         return
 
