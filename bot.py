@@ -3,18 +3,18 @@ import telebot
 import base64
 import zipfile
 import io
+import requests
+import json
 import time
-from anthropic import Anthropic
 from flask import Flask
 from threading import Thread
 
 # --- কনফিগারেশন ---
-API_KEY = "fe_oa_c1b46d08269cb2874f0e82fdecb91d79dde771dcbfc00280"
+API_KEY = "fe_oa_c1b46d08269cb2874f0e82fdecb91d79dde771dcbfc00280" # আপনার API Key দিন
 BASE_URL = "https://cc.freemodel.dev"
-BOT_TOKEN = "8836794590:AAGDA3S4ePZI1MTHWZM9ka1NO_BdddCFp20"
-ALLOWED_USER_ID = 5062314716 # আপনার টেলিগ্রাম ইউজার আইডি
+BOT_TOKEN = "8836794590:AAGDA3S4ePZI1MTHWZM9ka1NO_BdddCFp20" # আপনার Bot Token দিন
+ALLOWED_USER_ID = 5062314716 # আপনার টেলিগ্রাম ইউজার আইডি দিন
 
-client = Anthropic(api_key=API_KEY, base_url=BASE_URL)
 bot = telebot.TeleBot(BOT_TOKEN)
 
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
@@ -76,14 +76,31 @@ def handle_all_messages(message):
 
         content_blocks.append({"type": "text", "text": prompt_text})
         
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=8192,
-            messages=[{"role": "user", "content": content_blocks}]
-        )
+        # --- API Call using Requests (Stable for Proxies) ---
+        api_url = f"{BASE_URL}/v1/messages"
+        headers = {
+            "x-api-key": API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+        
+        payload = {
+            "model": "claude-sonnet-4-6", 
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": content_blocks}]
+        }
 
-        send_full_output(chat_id, response.content[0].text)
+        response = requests.post(api_url, headers=headers, json=payload, timeout=60)
 
+        if response.status_code == 200:
+            result_data = response.json()
+            final_response_text = result_data['content'][0]['text']
+            send_full_output(chat_id, final_response_text)
+        else:
+            bot.send_message(chat_id, f"API Error: {response.status_code}\n{response.text}")
+
+    except requests.exceptions.Timeout:
+        bot.send_message(chat_id, "Error: The AI took too long to respond (Timeout).")
     except Exception as e:
         bot.send_message(chat_id, f"An error occurred: {str(e)}")
 
