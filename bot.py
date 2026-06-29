@@ -1,5 +1,6 @@
 import os
 import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import zipfile
 import io
 import requests
@@ -16,13 +17,41 @@ ALLOWED_USER_ID = 5062314716
 # --- Cloudflare AI কনফিগারেশন ---
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID") 
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN")   
-CF_MODEL = "@cf/zai-org/glm-5.2" 
+DEFAULT_CF_MODEL = "@cf/zai-org/glm-5.2" 
 
 bot = telebot.TeleBot(BOT_TOKEN)
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
 
-# --- বটের লং-টার্ম মেমোরি (Chat History) ---
+# --- ডেটাবেস (মেমোরি এবং মডেল সিলেকশন) ---
 user_chat_history = {}
+user_active_model = {}
+
+# --- বিশাল মডেল কালেকশন ---
+# যদি কোনো মডেলের আইডিতে সমস্যা হয়, Cloudflare ড্যাশবোর্ড থেকে Copy ID করে এখানে বসিয়ে দেবেন
+AVAILABLE_MODELS = {
+    # --- Google ---
+    "gemini_35_flash": {"name": "Gemini 3.5 Flash", "id": "@cf/google/gemini-3.5-flash"},
+    "gemini_35_pro": {"name": "Gemini 3.5 Pro", "id": "@cf/google/gemini-3.5-pro"},
+    "gemini_3_flash": {"name": "Gemini 3 Flash", "id": "@cf/google/gemini-3-flash"},
+    
+    # --- Anthropic ---
+    "opus_48": {"name": "Claude Opus 4.8", "id": "@cf/anthropic/claude-opus-4.8"},
+    "fable_5": {"name": "Claude Fable 5", "id": "@cf/anthropic/claude-fable-5"},
+    "sonnet_46": {"name": "Claude 4.6 Sonnet", "id": "@cf/anthropic/claude-sonnet-4.6"},
+    
+    # --- Grok (xAI) ---
+    "grok_3": {"name": "Grok 3", "id": "@cf/xai/grok-3"},
+    "grok_2": {"name": "Grok 2", "id": "@cf/xai/grok-2"},
+    
+    # --- OpenAI ---
+    "gpt_55_pro": {"name": "GPT-5.5 Pro", "id": "@cf/openai/gpt-5.5-pro"},
+    "gpt_55": {"name": "GPT-5.5", "id": "@cf/openai/gpt-5.5"},
+    
+    # --- অন্যান্য সেরা কোডিং ও বেঞ্চমার্ক মডেল ---
+    "deepseek_v4": {"name": "DeepSeek V4", "id": "@cf/deepseek/deepseek-v4"},
+    "kimi_k25": {"name": "Kimi K2.5", "id": "@cf/moonshot/kimi-k2.5"},
+    "glm_52": {"name": "Z.ai (GLM-5.2)", "id": "@cf/zai-org/glm-5.2"}
+}
 
 def process_text_file(file_content, filename):
     try:
@@ -41,6 +70,39 @@ def send_full_output(chat_id, text, is_partial=False):
         file_stream.name = "partial_response.txt" if is_partial else "response.txt"
         bot.send_document(chat_id, file_stream, caption=caption)
 
+# --- মডেল পরিবর্তনের কমান্ড এবং বাটন মেনু ---
+@bot.message_handler(commands=['model'])
+def change_model_menu(message):
+    if message.from_user.id != ALLOWED_USER_ID: return
+    
+    markup = InlineKeyboardMarkup()
+    buttons = []
+    
+    # বাটনগুলো তৈরি করা
+    for key, data in AVAILABLE_MODELS.items():
+        buttons.append(InlineKeyboardButton(data['name'], callback_data=f"model_{key}"))
+    
+    # বাটনগুলোকে ২ কলামে (২টি করে এক লাইনে) সাজানো
+    for i in range(0, len(buttons), 2):
+        markup.add(*buttons[i:i+2])
+        
+    bot.send_message(message.chat.id, "🤖 **মডেল নির্বাচন করুন:**\nআপনি যে মডেলটি ব্যবহার করতে চান, সেটি নিচের তালিকা থেকে সিলেক্ট করুন:", reply_markup=markup, parse_mode="Markdown")
+
+# --- বাটন ক্লিকের রেসপন্স হ্যান্ডলার ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('model_'))
+def handle_model_selection(call):
+    if call.from_user.id != ALLOWED_USER_ID: return
+    
+    model_key = call.data.split('_')[1]
+    if model_key in AVAILABLE_MODELS:
+        selected_model_id = AVAILABLE_MODELS[model_key]['id']
+        selected_model_name = AVAILABLE_MODELS[model_key]['name']
+        
+        user_active_model[call.message.chat.id] = selected_model_id
+        
+        bot.answer_callback_query(call.id, f"{selected_model_name} অ্যাক্টিভ হয়েছে!")
+        bot.edit_message_text(f"✅ সফলভাবে **{selected_model_name}** মডেলে পরিবর্তন করা হয়েছে!\n\nএখন থেকে আপনার সব প্রজেক্ট এই এআই হ্যান্ডেল করবে।", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+
 # --- মেমোরি ক্লিয়ার করার কমান্ড ---
 @bot.message_handler(commands=['clear', 'reset'])
 def clear_memory(message):
@@ -57,7 +119,15 @@ def handle_all_messages(message):
     chat_id = message.chat.id
     prompt_text = message.text or message.caption or "Analyze the attached file(s)."
     
-    bot.send_message(chat_id, "Processing your request with API Streaming... Please wait.")
+    current_model = user_active_model.get(chat_id, DEFAULT_CF_MODEL)
+    
+    model_display_name = current_model
+    for key, data in AVAILABLE_MODELS.items():
+        if data['id'] == current_model:
+            model_display_name = data['name']
+            break
+            
+    bot.send_message(chat_id, f"Processing your request with `{model_display_name}`... Please wait.", parse_mode="Markdown")
 
     try:
         if message.document:
@@ -91,13 +161,12 @@ def handle_all_messages(message):
         if len(user_chat_history[chat_id]) > 15:
             user_chat_history[chat_id] = [user_chat_history[chat_id][0]] + user_chat_history[chat_id][-14:]
 
-        api_url = "https://api.cloudflare.com/client/v4/accounts/" + str(CF_ACCOUNT_ID) + "/ai/run/" + str(CF_MODEL)
+        api_url = "https://api.cloudflare.com/client/v4/accounts/" + str(CF_ACCOUNT_ID) + "/ai/run/" + str(current_model)
         headers = {
             "Authorization": "Bearer " + str(CF_API_TOKEN),
             "Content-Type": "application/json"
         }
         
-        # --- ম্যাজিক ট্রিক: Stream = True ---
         payload = {
             "messages": user_chat_history[chat_id],
             "stream": True 
@@ -107,7 +176,6 @@ def handle_all_messages(message):
         is_cut_off = False
         
         try:
-            # স্ট্রিম কানেকশন ওপেন করা হলো
             response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=120)
             
             if response.status_code == 200:
@@ -129,7 +197,7 @@ def handle_all_messages(message):
                             except:
                                 pass
             else:
-                bot.send_message(chat_id, f"API Error: {response.status_code}\n{response.text}")
+                bot.send_message(chat_id, f"API Error ({model_display_name}): {response.status_code}\n{response.text}")
                 user_chat_history[chat_id].pop()
                 return
 
@@ -141,20 +209,17 @@ def handle_all_messages(message):
             is_cut_off = True
 
         if not final_response_text.strip():
-            bot.send_message(chat_id, "❌ কোনো ডেটা জেনারেট হয়নি। আবার চেষ্টা করুন।")
+            bot.send_message(chat_id, "❌ কোনো ডেটা জেনারেট হয়নি। অন্য কোনো মডেল সিলেক্ট করে চেষ্টা করুন।")
             user_chat_history[chat_id].pop()
             return
 
-        # মেমোরিতে সেভ করা
         user_chat_history[chat_id].append({"role": "assistant", "content": final_response_text})
 
         is_continuing = prompt_text.strip().lower() in ['continue', 'চালিয়ে যাও']
         
-        # ফাইল পার্সিং ลজিক
         file_matches = re.findall(r'<file name="([^"]+)">([\s\S]*?)(?:</file>|$)', final_response_text, re.IGNORECASE)
         MD_TICKS = chr(96) * 3 
         
-        # যদি ফাইল অসম্পূর্ণ থাকে বা এটি কন্টিনিউ মেসেজ হয়, তাহলে জিপ না করে টেক্সট দেখাবো যাতে আপনি কন্টিনিউ করতে পারেন
         looks_incomplete = is_cut_off or ("<file" in final_response_text and "</file>" not in final_response_text)
         
         if file_matches and not looks_incomplete and not is_continuing:
@@ -192,7 +257,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is securely running 24/7 with Continuous Streaming Support!"
+    return "Bot is securely running 24/7 with Continuous Streaming & Multi-Model Switcher!"
 
 def run_bot():
     while True:
