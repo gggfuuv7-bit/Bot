@@ -55,7 +55,7 @@ def send_full_output(chat_id, text, is_partial=False):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     if message.from_user.id != ALLOWED_USER_ID: return
-    bot.send_message(message.chat.id, "✅ বট সফলভাবে চালু হয়েছে এবং কাজ করার জন্য প্রস্তুত! \n\nমডেল পরিবর্তন করতে **/model** লিখুন।", parse_mode="Markdown")
+    bot.send_message(message.chat.id, "✅ বট সফলভাবে চালু হয়েছে এবং কাজ করার জন্য প্রস্তুত! \n\nমডেল পরিবর্তন করতে /model লিখুন।", parse_mode="Markdown")
 
 # --- মডেল মেনু ---
 @bot.message_handler(commands=['model'])
@@ -108,6 +108,7 @@ def handle_all_messages(message):
                         if not info.is_dir() and os.path.splitext(info.filename)[1].lower() in TEXT_EXTENSIONS:
                             with z.open(info) as f: prompt_text += process_text_file(f.read(), info.filename)
 
+        # XML Instruction
         sys_inst = "You are an expert AI. If user asks for files/ZIP, output using XML: <file name=\"name.ext\">\ncontent\n</file>\nNo markdown blocks outside. For 'continue', resume seamlessly."
         
         if chat_id not in user_chat_history: user_chat_history[chat_id] = [{"role": "system", "content": sys_inst}]
@@ -120,7 +121,7 @@ def handle_all_messages(message):
         final_response_text, is_cut_off = "", False
         
         try:
-            response = requests.post(f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/{current_model}", headers=headers, json=payload, stream=True, timeout=120)
+            response = requests.post(f"[https://api.cloudflare.com/client/v4/accounts/](https://api.cloudflare.com/client/v4/accounts/){CF_ACCOUNT_ID}/ai/run/{current_model}", headers=headers, json=payload, stream=True, timeout=120)
             if response.status_code == 200:
                 for line in response.iter_lines():
                     if line and line.decode('utf-8').startswith("data: "):
@@ -147,24 +148,38 @@ def handle_all_messages(message):
         file_matches = re.findall(r'<file name="([^"]+)">([\s\S]*?)(?:</file>|$)', final_response_text, re.IGNORECASE)
         looks_inc = is_cut_off or ("<file" in final_response_text and "</file>" not in final_response_text)
         
+        # সিনট্যাক্স এরর এড়ানোর স্পেশাল ট্রিক (নো কোটেশন মার্কস)
+        MD_TICKS = chr(96) * 3
+        
         if file_matches and not looks_inc and not is_cont:
             if len(file_matches) > 1 or 'zip' in prompt_text.lower():
                 zb = io.BytesIO()
                 with zipfile.ZipFile(zb, 'w', zipfile.ZIP_DEFLATED) as zf:
                     for fn, fc in file_matches:
                         fc = fc.strip()
-                        if fc.startswith("
-http://googleusercontent.com/immersive_entry_chip/0
-http://googleusercontent.com/immersive_entry_chip/1
-http://googleusercontent.com/immersive_entry_chip/2
-http://googleusercontent.com/immersive_entry_chip/3
+                        if fc.startswith(MD_TICKS): fc = fc.split('\n', 1)[-1]
+                        if fc.endswith(MD_TICKS): fc = fc.rsplit('\n', 1)[0]
+                        zf.writestr(fn, fc.strip())
+                zb.seek(0); zb.name = "project.zip"
+                bot.send_document(chat_id, zb, caption="Here is your ZIP file.")
+            else:
+                fn, fc = file_matches[0][0], file_matches[0][1].strip()
+                if fc.startswith(MD_TICKS): fc = fc.split('\n', 1)[-1]
+                if fc.endswith(MD_TICKS): fc = fc.rsplit('\n', 1)[0]
+                fb = io.BytesIO(fc.strip().encode('utf-8'))
+                fb.name = fn
+                bot.send_document(chat_id, fb, caption=f"Here is your {fn} file.")
+        else: send_full_output(chat_id, final_response_text, is_partial=looks_inc)
+    except Exception as e: bot.send_message(chat_id, f"Error: {str(e)}")
 
-### ধাপ ২: বটকে 24/7 জাগিয়ে রাখার ট্রিক (UptimeRobot)
-গিটহাবে কোড সেভ করার ৩-৪ মিনিট পর টেলিগ্রামে গিয়ে `/start` লিখুন। বট চালু হয়ে যাবে। এরপর বট যেন আর কখনো না ঘুমায়, তার জন্য এই ১ মিনিটের কাজটি করে রাখুন:
+app = Flask(__name__)
+@app.route('/')
+def home(): return "Bot is Alive!"
 
-১. ব্রাউজার থেকে Render-এর ড্যাশবোর্ডে গিয়ে আপনার প্রজেক্টের নামের নিচে থাকা লিংকটি (যেমন: `https://your-bot-name.onrender.com`) কপি করুন।
-২. এবার [UptimeRobot](https://uptimerobot.com/) ওয়েবসাইটে গিয়ে ফ্রিতে একটি অ্যাকাউন্ট খুলুন।
-৩. ড্যাশবোর্ড থেকে **"Add New Monitor"** এ ক্লিক করুন।
-৪. Type হিসেবে `HTTP(s)` সিলেক্ট করুন, Name-এ বটের নাম দিন এবং URL-এর জায়গায় Render থেকে কপি করা লিংকটি পেস্ট করে "Create Monitor"-এ ক্লিক করুন।
+def run_bot():
+    bot.remove_webhook()
+    bot.infinity_polling(timeout=60, long_polling_timeout=60)
 
-ব্যাস! UptimeRobot এখন প্রতি ৫ মিনিট পরপর আপনার বটকে একটি করে ধাক্কা দেবে, ফলে আপনার বট জীবনেও ঘুমাবে না এবং আপনি `/model` লেখামাত্রই এক সেকেন্ডে মেনু চলে আসবে!
+if __name__ == "__main__":
+    Thread(target=run_bot, daemon=True).start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
