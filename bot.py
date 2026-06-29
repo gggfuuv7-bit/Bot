@@ -1,105 +1,79 @@
 import os
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import zipfile
 import io
 import requests
 import time
 import json
-import re
 from flask import Flask
 from threading import Thread
 
-# --- কনফিগারেশন ---
+# কনফিগারেশন
 BOT_TOKEN = os.environ.get("BOT_TOKEN") 
-ALLOWED_USER_ID = 5062314716 
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID") 
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN")   
-DEFAULT_CF_MODEL = "@cf/zai-org/glm-5.2" 
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# --- মেমোরি এবং মডেল স্টোরেজ ---
-user_chat_history = {}
-# গ্লোবাল ডিকশনারি ব্যবহার করছি যা Render-এ রিস্টার্ট না হওয়া পর্যন্ত থাকবে
-user_active_model = {} 
+# গ্লোবাল স্টেট ম্যানেজমেন্ট
+project_state = {} # {chat_id: {"files": {...}, "grok_memory": "...", "glm_state": "..."}}
 
-AVAILABLE_MODELS = {
-    "gemini": {"name": "Gemini 3.5 Flash", "id": "@cf/google/gemini-3.5-flash"},
-    "opus": {"name": "Claude Opus 4.8", "id": "@cf/anthropic/claude-opus-4.8"},
-    "grok": {"name": "Grok 3", "id": "@cf/xai/grok-3"},
-    "gpt": {"name": "GPT-5.5 Pro", "id": "@cf/openai/gpt-5.5-pro"},
-    "deepseek": {"name": "DeepSeek V4 Pro", "id": "@cf/deepseek/deepseek-v4"},
-    "glm": {"name": "Z.ai (GLM-5.2)", "id": "@cf/zai-org/glm-5.2"}
-}
+def call_ai(model, messages):
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/{model}"
+    headers = {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
+    response = requests.post(url, headers=headers, json={"messages": messages}, timeout=200)
+    data = response.json()
+    return data.get("result", {}).get("response", str(data))
 
-# --- স্ট্যাবল বাটন মেনু ---
-@bot.message_handler(commands=['model'])
-def change_model_menu(message):
-    markup = InlineKeyboardMarkup(row_width=2)
-    buttons = [InlineKeyboardButton(data['name'], callback_data=f"model_{key}") for key, data in AVAILABLE_MODELS.items()]
-    markup.add(*buttons)
-    bot.send_message(message.chat.id, "🤖 **মডেল নির্বাচন করুন:**", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('model_'))
-def handle_model_selection(call):
-    model_key = call.data.split('_')[1]
-    if model_key in AVAILABLE_MODELS:
-        # মডেলটি সরাসরি সেভ করছি
-        user_active_model[call.message.chat.id] = AVAILABLE_MODELS[model_key]['id']
-        bot.answer_callback_query(call.id, f"{AVAILABLE_MODELS[model_key]['name']} সিলেক্ট হয়েছে!")
-        bot.edit_message_text(f"✅ এখন থেকে **{AVAILABLE_MODELS[model_key]['name']}** দিয়ে চ্যাট হবে।", 
-                              call.message.chat.id, call.message.message_id)
-
-@bot.message_handler(content_types=['text', 'document'])
-def handle_message(message):
+@bot.message_handler(content_types=['document'])
+def handle_zip(message):
     chat_id = message.chat.id
+    file_info = bot.get_file(message.document.file_id)
+    downloaded_file = bot.download_file(file_info.file_path)
     
-    # মডেল চেক: যদি সেট না থাকে তবে ডিফল্ট GLM
-    model_id = user_active_model.get(chat_id, DEFAULT_CF_MODEL)
+    project_state[chat_id] = {"files": {}, "memory": ""}
     
-    bot.send_message(chat_id, f"Processing with: `{model_id.split('/')[-1]}`", parse_mode="Markdown")
+    with zipfile.ZipFile(io.BytesIO(downloaded_file)) as z:
+        for info in z.infolist():
+            if not info.is_dir() and info.filename.endswith(('.dart', '.html', '.js', '.css', '.py')):
+                with z.open(info) as f:
+                    project_state[chat_id]["files"][info.filename] = f.read().decode('utf-8', 'ignore')
+    
+    # Grok কে দিয়ে ইনিশিয়াল রিডিং
+    context = "\n".join([f"File: {k}\n{v}" for k, v in project_state[chat_id]["files"].items()])
+    grok_init = [{"role": "user", "content": f"You are the master Controller. Remember this project: {context}"}]
+    project_state[chat_id]["memory"] = call_ai("@cf/xai/grok-4.20-multi-agent-0309", grok_init)
+    
+    bot.send_message(chat_id, "✅ প্রজেক্ট Grok-এর মেমোরিতে লোড হয়েছে। এখন কাজ শুরু করুন।")
 
-    try:
-        # API কল
-        api_url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/{model_id}"
-        headers = {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
-        
-        # প্রম্পট হ্যান্ডলিং
-        prompt = message.text or message.caption or "Help me with coding."
-        
-        # মেমোরি এবং সিস্টেম ইনস্ট্রাকশন
-        if chat_id not in user_chat_history: 
-            user_chat_history[chat_id] = [{"role": "system", "content": "You are a coding expert. Output code in XML tags: <file name='x.y'>content</file>"}]
-        
-        user_chat_history[chat_id].append({"role": "user", "content": prompt})
-        
-        payload = {"messages": user_chat_history[chat_id][-10:], "stream": True}
-        
-        final_text = ""
-        response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=180)
-        
-        if response.status_code == 200:
-            for line in response.iter_lines():
-                if line:
-                    chunk = json.loads(line.decode('utf-8').replace('data: ', ''))
-                    if 'response' in chunk: final_text += chunk['response']
-                    elif 'choices' in chunk: final_text += chunk['choices'][0].get('delta', {}).get('content', '')
-            
-            user_chat_history[chat_id].append({"role": "assistant", "content": final_text})
-            
-            # আউটপুট সেন্ড
-            bot.send_message(chat_id, final_text[:4000] if len(final_text) < 4000 else "Output too long, check file.")
-        else:
-            bot.send_message(chat_id, f"API Error ({response.status_code}): {response.text}")
-            
-    except Exception as e:
-        bot.send_message(chat_id, f"Error: {str(e)}")
+@bot.message_handler(content_types=['text'])
+def handle_task(message):
+    chat_id = message.chat.id
+    if chat_id not in project_state:
+        bot.send_message(chat_id, "প্রথমে জিপ ফাইল পাঠান।")
+        return
+
+    # ১. Grok কে বলা পরিবর্তন শনাক্ত করতে
+    grok_msg = [{"role": "user", "content": f"Memory: {project_state[chat_id]['memory']}. Task: {message.text}. Which files change and how?"}]
+    instructions = call_ai("@cf/xai/grok-4.20-multi-agent-0309", grok_msg)
+    
+    # ২. GLM কে বলা কোড করতে
+    glm_msg = [{"role": "user", "content": f"Follow these instructions: {instructions}. Project: {project_state[chat_id]['files']}. Output only the updated file content in <file name='x'>content</file> tags."}]
+    updated_files = call_ai("@cf/zai-org/glm-5.2", glm_msg)
+    
+    # ৩. স্টেট আপডেট (Sync)
+    updates = re.findall(r'<file name="([^"]+)">([\s\S]*?)</file>', updated_files)
+    for fname, fcontent in updates:
+        project_state[chat_id]["files"][fname] = fcontent
+        # Grok এর মেমোরিও আপডেট করা
+        project_state[chat_id]["memory"] += f"\nUpdated {fname} to: {fcontent[:200]}"
+    
+    bot.send_message(chat_id, f"✅ কাজ সম্পন্ন। আপডেট হয়েছে: {[u[0] for u in updates]}")
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot is Alive!"
+def home(): return "Sync Agent Online!"
 
 if __name__ == "__main__":
-    Thread(target=lambda: bot.infinity_polling(timeout=60, long_polling_timeout=60), daemon=True).start()
+    Thread(target=lambda: bot.infinity_polling(), daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
