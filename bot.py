@@ -16,7 +16,7 @@ ALLOWED_USER_ID = 5062314716
 # --- Cloudflare AI কনফিগারেশন ---
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID") 
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN")   
-CF_MODEL = "anthropic/claude-fable-5" 
+CF_MODEL = "anthropic/claude-opus-4.8" 
 
 bot = telebot.TeleBot(BOT_TOKEN)
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
