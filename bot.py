@@ -16,31 +16,22 @@ ALLOWED_USER_ID = 5062314716
 # --- Cloudflare AI কনফিগারেশন ---
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID") 
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN")   
-
-# --- এআই মডেল ---
-GLM_WORKER = "@cf/zai-org/glm-5.2"
-GROK_ARCHITECT = "@cf/xai/grok-4.20-multi-agent-0309"
+CF_MODEL = "@cf/zai-org/glm-5.2" 
+ARCHITECT_MODEL = "@cf/xai/grok-4.20-multi-agent-0309" # শুধু বড় প্রজেক্টের জন্য
 
 bot = telebot.TeleBot(BOT_TOKEN)
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
 
-# --- প্রোজেক্টের গ্লোবাল স্টেট এবং মেমোরি ---
-# এর ভেতরে ফাইল এবং Grok-এর লং-টার্ম মেমোরি সেভ থাকবে
-project_state = {}
+# --- মেমোরি ডেটাবেস ---
+user_chat_history = {} # সাধারণ চ্যাটের জন্য
+project_state = {}     # বড় প্রজেক্ট/জিপ ফাইলের জন্য
 
-def call_ai_sync(model, messages):
-    """Grok-এর মতো নন-স্ট্রিমিং কাজের জন্য সাধারণ এপিআই কল"""
-    url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/{model}"
-    headers = {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
+def process_text_file(file_content, filename):
     try:
-        response = requests.post(url, headers=headers, json={"messages": messages}, timeout=200)
-        if response.status_code == 200:
-            data = response.json()
-            if "result" in data and "response" in data["result"]: return data["result"]["response"]
-            if "result" in data and "choices" in data["result"]: return data["result"]["choices"][0]["message"]["content"]
-        return f"Error: {response.status_code} - {response.text}"
-    except Exception as e:
-        return f"Exception: {str(e)}"
+        text = file_content.decode('utf-8')
+        return f"\n--- File: {filename} ---\n{text}\n"
+    except:
+        return f"\n[Error reading {filename} as text]\n"
 
 def send_full_output(chat_id, text, is_partial=False):
     caption = "⚠️ লিমিট শেষ! বাকিটুকু পেতে 'continue' বা 'চালিয়ে যাও' লিখুন।" if is_partial else "Output is too long, sending as file."
@@ -52,129 +43,135 @@ def send_full_output(chat_id, text, is_partial=False):
         file_stream.name = "partial_response.txt" if is_partial else "response.txt"
         bot.send_document(chat_id, file_stream, caption=caption)
 
+def call_grok_sync(messages):
+    """Grok-কে কল করার জন্য ফাংশন"""
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/{ARCHITECT_MODEL}"
+    headers = {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
+    try:
+        response = requests.post(url, headers=headers, json={"messages": messages}, timeout=200)
+        data = response.json()
+        if "result" in data and "response" in data["result"]: return data["result"]["response"]
+        if "result" in data and "choices" in data["result"]: return data["result"]["choices"][0]["message"]["content"]
+        return str(data)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+# --- মেমোরি ক্লিয়ার করার কমান্ড ---
 @bot.message_handler(commands=['clear', 'reset'])
 def clear_memory(message):
     if message.from_user.id != ALLOWED_USER_ID: return
     chat_id = message.chat.id
-    if chat_id in project_state:
-        del project_state[chat_id]
-    bot.send_message(chat_id, "🧹 প্রজেক্ট এবং বটের মেমোরি সম্পূর্ণ ক্লিয়ার করা হয়েছে! নতুন প্রজেক্ট শুরু করতে পারেন।")
+    if chat_id in user_chat_history: del user_chat_history[chat_id]
+    if chat_id in project_state: del project_state[chat_id]
+    bot.send_message(chat_id, "🧹 বটের মেমোরি ক্লিয়ার করা হয়েছে! (সাধারণ চ্যাট এবং প্রজেক্ট মেমোরি দুটোই)")
 
-@bot.message_handler(content_types=['document'])
-def handle_project_upload(message):
-    """ফাইল বা জিপ আপলোড হলে সেটি আনজিপ করে Grok-কে পড়তে দেওয়া হবে"""
+@bot.message_handler(content_types=['text', 'document'])
+def handle_all_messages(message):
     if message.from_user.id != ALLOWED_USER_ID: return
     chat_id = message.chat.id
-    
-    bot.send_message(chat_id, "📂 ফাইল রিসিভ করেছি। আনজিপ করে Grok-এর মেমোরিতে সেট করা হচ্ছে... Please wait.")
-    
-    if chat_id not in project_state:
-        project_state[chat_id] = {"files": {}, "grok_history": []}
-        
-    try:
-        file_info = bot.get_file(message.document.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        file_name = message.document.file_name.lower()
-        file_ext = os.path.splitext(file_name)[1]
 
-        added_files = []
-        if file_ext in TEXT_EXTENSIONS:
-            content = downloaded_file.decode('utf-8', 'ignore')
-            project_state[chat_id]["files"][file_name] = content
-            added_files.append(file_name)
+    # -------------------------------------------------------------
+    # ধাপ ১: ফাইল বা জিপ আপলোড হলে (Project Mode Active হবে)
+    # -------------------------------------------------------------
+    if message.document:
+        bot.send_message(chat_id, "📂 প্রজেক্ট ফাইল প্রসেস করে Grok-এর মেমোরিতে দেওয়া হচ্ছে... Please wait.")
+        if chat_id not in project_state:
+            project_state[chat_id] = {"files": {}, "grok_history": []}
             
-        elif file_ext == '.zip':
-            with zipfile.ZipFile(io.BytesIO(downloaded_file)) as z:
-                for info in z.infolist():
-                    if not info.is_dir() and os.path.splitext(info.filename)[1].lower() in TEXT_EXTENSIONS:
-                        with z.open(info) as f:
-                            content = f.read().decode('utf-8', 'ignore')
-                            project_state[chat_id]["files"][info.filename] = content
-                            added_files.append(info.filename)
-        
-        # Grok-এর মেমোরিতে পুরো প্রজেক্ট ইনজেক্ট করা
-        project_context = "\n".join([f"--- File: {k} ---\n{v}" for k, v in project_state[chat_id]["files"].items()])
-        sys_msg = "You are Grok, the Chief Architect. You hold the complete structure and code of this project in your memory. You must analyze user tasks and dictate exactly which files need to change and how."
-        
-        project_state[chat_id]["grok_history"] = [
-            {"role": "system", "content": sys_msg},
-            {"role": "user", "content": f"Here is the full project code. Memorize it:\n{project_context}\n\nAcknowledge that you have memorized the project."}
-        ]
-        
-        ack = call_ai_sync(GROK_ARCHITECT, project_state[chat_id]["grok_history"])
-        project_state[chat_id]["grok_history"].append({"role": "assistant", "content": ack})
-        
-        bot.send_message(chat_id, f"✅ Grok সফলভাবে {len(added_files)} টি ফাইল পড়েছে এবং প্রজেক্ট মেমোরিতে সেভ করেছে! এখন তাকে ইনস্ট্রাকশন দিন।")
+        try:
+            file_info = bot.get_file(message.document.file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            file_name = message.document.file_name.lower()
+            file_ext = os.path.splitext(file_name)[1]
 
-    except Exception as e:
-        bot.send_message(chat_id, f"ফাইল প্রসেস করতে এরর হয়েছে: {str(e)}")
-
-@bot.message_handler(content_types=['text'])
-def handle_text_task(message):
-    """ইউজারের টেক্সট প্রম্পট প্রসেস করা"""
-    if message.from_user.id != ALLOWED_USER_ID: return
-    chat_id = message.chat.id
-    task = message.text
-
-    if chat_id not in project_state or not project_state[chat_id]["files"]:
-        bot.send_message(chat_id, "⚠️ আপনার মেমোরিতে কোনো প্রজেক্ট নেই। অনুগ্রহ করে প্রথমে একটি প্রজেক্টের .zip বা ফাইল পাঠান।")
-        return
-
-    is_continuing = task.strip().lower() in ['continue', 'চালিয়ে যাও']
-
-    if not is_continuing:
-        # -------------------------------------------------------------
-        # ধাপ ১: Grok (Architect) এর কাছে প্ল্যান চাওয়া
-        # -------------------------------------------------------------
-        bot.send_message(chat_id, "🧠 Grok প্রজেক্ট অ্যানালাইসিস করে প্ল্যান তৈরি করছে...")
-        
-        grok_prompt = f"The user wants to do this: '{task}'. Based on the project in your memory, list EXACTLY which files need to be modified and write a detailed instruction for the Coder (GLM) on what to change."
-        project_state[chat_id]["grok_history"].append({"role": "user", "content": grok_prompt})
-        
-        grok_plan = call_ai_sync(GROK_ARCHITECT, project_state[chat_id]["grok_history"])
-        project_state[chat_id]["grok_history"].append({"role": "assistant", "content": grok_plan})
-        
-        # কোন কোন ফাইলের নাম Grok বলেছে, তা ম্যাপ করা
-        target_files_content = {}
-        for fname, fcontent in project_state[chat_id]["files"].items():
-            if fname in grok_plan or fname.split('/')[-1] in grok_plan:
-                target_files_content[fname] = fcontent
-                
-        if not target_files_content:
-            bot.send_message(chat_id, f"Grok-এর প্ল্যান:\n{grok_plan}\n\n⚠️ Grok কোনো নির্দিষ্ট ফাইলের নাম উল্লেখ করেনি। GLM-কে কল করা বাতিল করা হলো।")
+            if file_ext in TEXT_EXTENSIONS:
+                project_state[chat_id]["files"][file_name] = downloaded_file.decode('utf-8', 'ignore')
+            elif file_ext == '.zip':
+                with zipfile.ZipFile(io.BytesIO(downloaded_file)) as z:
+                    for info in z.infolist():
+                        if not info.is_dir() and os.path.splitext(info.filename)[1].lower() in TEXT_EXTENSIONS:
+                            with z.open(info) as f:
+                                project_state[chat_id]["files"][info.filename] = f.read().decode('utf-8', 'ignore')
+            
+            # Grok-কে প্রজেক্ট মনে রাখতে বলা
+            project_context = "\n".join([f"--- File: {k} ---\n{v}" for k, v in project_state[chat_id]["files"].items()])
+            sys_msg = "You are Grok, the Chief Architect. Memorize the project files. You don't write code, you analyze tasks and tell the Coder which files to edit and how."
+            project_state[chat_id]["grok_history"] = [
+                {"role": "system", "content": sys_msg},
+                {"role": "user", "content": f"Project Code:\n{project_context}\n\nAcknowledge that you have memorized this."}
+            ]
+            
+            ack = call_grok_sync(project_state[chat_id]["grok_history"])
+            project_state[chat_id]["grok_history"].append({"role": "assistant", "content": ack})
+            bot.send_message(chat_id, "✅ Grok প্রজেক্ট বুঝে মেমোরিতে সেভ করেছে! এখন আপনার ইনস্ট্রাকশন দিন। (Dual-Agent Mode Active)")
+            return # ফাইল প্রসেসিং শেষ
+            
+        except Exception as e:
+            bot.send_message(chat_id, f"Error processing file: {str(e)}")
             return
+
+    # -------------------------------------------------------------
+    # ধাপ ২: টেক্সট মেসেজ প্রসেসিং
+    # -------------------------------------------------------------
+    prompt_text = message.text or "Analyze."
+    is_continuing = prompt_text.strip().lower() in ['continue', 'চালিয়ে যাও']
+    
+    # === A. Project Mode (Dual-Agent) ===
+    if chat_id in project_state and project_state[chat_id].get("files"):
+        if not is_continuing:
+            bot.send_message(chat_id, "🧠 Grok অ্যানালাইসিস করে প্ল্যান তৈরি করছে...")
+            # 1. Grok Plan
+            project_state[chat_id]["grok_history"].append({"role": "user", "content": f"Task: {prompt_text}. Which files need changing and how?"})
+            grok_plan = call_grok_sync(project_state[chat_id]["grok_history"])
+            project_state[chat_id]["grok_history"].append({"role": "assistant", "content": grok_plan})
             
-        bot.send_message(chat_id, f"📋 **Grok-এর প্ল্যান প্রস্তুত!**\nএডিট হবে: {list(target_files_content.keys())}\n\n✍️ GLM 5.2 এখন কোড জেনারেট করছে...")
-
-        # -------------------------------------------------------------
-        # ধাপ ২: GLM (Worker) এর কাছে কাজ হস্তান্তর
-        # -------------------------------------------------------------
-        glm_sys = (
-            "You are GLM 5.2, an expert Coder. You will receive an Architect's plan and only the specific files needed for the task. "
-            "Write the updated code. You MUST output the modified files using this XML structure:\n"
-            '<file name="exact_filename.extension">\n[write the complete updated file content here]\n</file>\n'
-            "Do NOT use markdown code blocks outside the tags."
-        )
-        
-        files_to_edit_str = "\n".join([f"--- File: {k} ---\n{v}" for k, v in target_files_content.items()])
-        glm_prompt = f"Architect's Plan & Instructions: {grok_plan}\n\nTarget Files Context:\n{files_to_edit_str}\n\nImplement the changes perfectly based on the plan."
-        
-        # GLM-এর জন্য টেম্পরারি হিস্ট্রি (যাতে এর কনটেক্সট লিমিট বেঁচে যায়)
-        project_state[chat_id]["glm_current_task"] = [
-            {"role": "system", "content": glm_sys},
-            {"role": "user", "content": glm_prompt}
-        ]
-        
+            # Find targeted files
+            target_files = {k: v for k, v in project_state[chat_id]["files"].items() if k in grok_plan or k.split('/')[-1] in grok_plan}
+            
+            if not target_files:
+                bot.send_message(chat_id, f"Grok-এর প্ল্যান:\n{grok_plan}\n\n⚠️ কোনো ফাইল এডিট করার প্রয়োজন নেই বা Grok ফাইলের নাম উল্লেখ করেনি।")
+                return
+                
+            bot.send_message(chat_id, f"📋 প্ল্যান রেডি! এডিট হবে: {list(target_files.keys())}\n\n✍️ GLM 5.2 এখন কোড লিখছে...")
+            
+            # 2. Setup GLM
+            glm_sys = "You are GLM 5.2, an expert Coder. Follow the Architect's plan. Output modified files in XML: <file name='exact_filename.ext'>content</file>."
+            files_context = "\n".join([f"--- File: {k} ---\n{v}" for k, v in target_files.items()])
+            glm_prompt = f"Plan: {grok_plan}\n\nFiles:\n{files_context}\n\nTask: {prompt_text}"
+            
+            current_messages = [{"role": "system", "content": glm_sys}, {"role": "user", "content": glm_prompt}]
+            project_state[chat_id]["current_glm_stream"] = current_messages
+        else:
+            bot.send_message(chat_id, "✍️ GLM 5.2 কন্টিনিউ করছে...")
+            current_messages = project_state[chat_id].get("current_glm_stream", [])
+            current_messages.append({"role": "user", "content": "continue"})
+            
+    # === B. Normal Mode (আপনার দেওয়া আগের লজিক) ===
     else:
-        bot.send_message(chat_id, "✍️ GLM 5.2 আগের জায়গা থেকে কন্টিনিউ করছে...")
-        project_state[chat_id]["glm_current_task"].append({"role": "user", "content": "continue"})
+        bot.send_message(chat_id, "Processing your request with GLM-5.2... Please wait.")
+        system_instruction = (
+            "You are an expert AI coding assistant. "
+            "If the user asks for files or a ZIP, you MUST output the files using this exact XML structure:\n"
+            '<file name="exact_filename.extension">\n[write the complete file content here]\n</file>\n'
+            "Do NOT use markdown code blocks. "
+            "CRITICAL: If the user types 'continue', you MUST seamlessly continue exactly from where your last response stopped."
+        )
+
+        if chat_id not in user_chat_history:
+            user_chat_history[chat_id] = [{"role": "system", "content": system_instruction}]
+        
+        user_chat_history[chat_id].append({"role": "user", "content": prompt_text})
+        if len(user_chat_history[chat_id]) > 15:
+            user_chat_history[chat_id] = [user_chat_history[chat_id][0]] + user_chat_history[chat_id][-14:]
+            
+        current_messages = user_chat_history[chat_id]
 
     # -------------------------------------------------------------
-    # ধাপ ৩: GLM-এর স্ট্রিমিং রেসপন্স প্রসেসিং
+    # ধাপ ৩: GLM Streaming (উভয় মোডের জন্য একই লজিক)
     # -------------------------------------------------------------
-    api_url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/{GLM_WORKER}"
+    api_url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/{CF_MODEL}"
     headers = {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
-    payload = {"messages": project_state[chat_id]["glm_current_task"], "stream": True}
+    payload = {"messages": current_messages, "stream": True}
 
     final_response_text = ""
     is_cut_off = False
@@ -196,68 +193,71 @@ def handle_text_task(message):
                                 if "content" in delta: final_response_text += delta["content"]
                         except: pass
         else:
-            bot.send_message(chat_id, f"GLM API Error: {response.status_code}\n{response.text}")
+            bot.send_message(chat_id, f"API Error: {response.status_code}\n{response.text}")
             return
     except Exception as e:
         is_cut_off = True
 
     if not final_response_text.strip():
-        bot.send_message(chat_id, "❌ GLM কোনো ডেটা জেনারেট করেনি।")
+        bot.send_message(chat_id, "❌ কোনো ডেটা জেনারেট হয়নি। আবার চেষ্টা করুন।")
         return
 
-    project_state[chat_id]["glm_current_task"].append({"role": "assistant", "content": final_response_text})
+    # হিস্ট্রি আপডেট
+    current_messages.append({"role": "assistant", "content": final_response_text})
 
     # -------------------------------------------------------------
-    # ধাপ ৪: ফাইল পার্সিং এবং Grok ও গ্লোবাল স্টেট সিঙ্ক (Sync)
+    # ধাপ ৪: ফাইল পার্সিং এবং আউটপুট
     # -------------------------------------------------------------
     file_matches = re.findall(r'<file name="([^"]+)">([\s\S]*?)(?:</file>|$)', final_response_text, re.IGNORECASE)
     MD_TICKS = chr(96) * 3 
     looks_incomplete = is_cut_off or ("<file" in final_response_text and "</file>" not in final_response_text)
 
     if file_matches and not looks_incomplete and not is_continuing:
-        updated_file_names = []
+        user_wants_zip = 'zip' in prompt_text.lower()
         
-        zb = io.BytesIO()
-        with zipfile.ZipFile(zb, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            for filename, content in file_matches:
-                content = content.strip()
-                if content.startswith(MD_TICKS): content = content.split('\n', 1)[-1]
-                if content.endswith(MD_TICKS): content = content.rsplit('\n', 1)[0]
-                content = content.strip()
-                
-                # ১. গ্লোবাল প্রজেক্ট স্টেট আপডেট করা
-                project_state[chat_id]["files"][filename] = content
-                updated_file_names.append(filename)
-                
-                zip_file.writestr(filename, content)
+        # প্রজেক্ট মোড হলে মেমোরি আপডেট (Sync) করতে হবে
+        if chat_id in project_state and project_state[chat_id].get("files"):
+            sync_msg = "SYSTEM UPDATE: Files modified:\n"
+            for fn, fc in file_matches:
+                fc = fc.strip()
+                if fc.startswith(MD_TICKS): fc = fc.split('\n', 1)[-1]
+                if fc.endswith(MD_TICKS): fc = fc.rsplit('\n', 1)[0]
+                project_state[chat_id]["files"][fn] = fc.strip()
+                sync_msg += f"--- {fn} ---\n{fc.strip()[:200]}...\n"
+            project_state[chat_id]["grok_history"].append({"role": "user", "content": sync_msg})
+            call_grok_sync(project_state[chat_id]["grok_history"][-1:]) # দ্রুত আপডেট
+            bot.send_message(chat_id, "🔄 প্রজেক্ট ফাইল ও মেমোরি আপডেট করা হয়েছে।")
         
-        # ২. Grok-এর মেমোরি আপডেট করা (Sync)
-        sync_msg = f"SYSTEM UPDATE: The Coder (GLM) has successfully updated the following files based on your plan:\n"
-        for fn in updated_file_names:
-            sync_msg += f"--- {fn} ---\n{project_state[chat_id]['files'][fn]}\n"
-        sync_msg += "Acknowledge this update and overwrite your memory with this new code."
-        
-        project_state[chat_id]["grok_history"].append({"role": "user", "content": sync_msg})
-        sync_ack = call_ai_sync(GROK_ARCHITECT, project_state[chat_id]["grok_history"][-1:]) # দ্রুত একনলেজমেন্ট
-        project_state[chat_id]["grok_history"].append({"role": "assistant", "content": "Acknowledged. Memory synced."})
-        
-        # ৩. ইউজারকে ফাইল পাঠানো
-        if len(file_matches) > 1 or 'zip' in task.lower():
-            zb.seek(0)
-            zb.name = "updated_project.zip"
-            bot.send_document(chat_id, zb, caption=f"🔄 সিঙ্ক্রোনাইজেশন সম্পন্ন! \nএই ফাইলগুলো আপডেট হয়েছে: {updated_file_names}")
+        # ফাইল সেন্ড করা
+        if len(file_matches) > 1 or user_wants_zip:
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                for filename, content in file_matches:
+                    content = content.strip()
+                    if content.startswith(MD_TICKS): content = content.split('\n', 1)[-1]
+                    if content.endswith(MD_TICKS): content = content.rsplit('\n', 1)[0]
+                    zip_file.writestr(filename, content.strip())
+            
+            zip_buffer.seek(0)
+            zip_buffer.name = "project_files.zip"
+            bot.send_document(chat_id, zip_buffer, caption="Here is your ZIP file.")
         else:
             filename = file_matches[0][0]
-            file_buffer = io.BytesIO(project_state[chat_id]["files"][filename].encode('utf-8'))
+            content = file_matches[0][1].strip()
+            if content.startswith(MD_TICKS): content = content.split('\n', 1)[-1]
+            if content.endswith(MD_TICKS): content = content.rsplit('\n', 1)[0]
+                
+            file_buffer = io.BytesIO(content.strip().encode('utf-8'))
             file_buffer.name = filename
-            bot.send_document(chat_id, file_buffer, caption=f"🔄 সিঙ্ক্রোনাইজেশন সম্পন্ন! \n{filename} আপডেট করা হয়েছে।")
-            
+            bot.send_document(chat_id, file_buffer, caption=f"Here is your {filename} file.")
     else:
         send_full_output(chat_id, final_response_text, is_partial=looks_incomplete)
 
 app = Flask(__name__)
+
 @app.route('/')
-def home(): return "Bot is securely running 24/7 with Dual-Agent Architecture!"
+def home():
+    return "Bot is running with Hybrid Mode (Normal Chat + Dual-Agent Project)!"
 
 def run_bot():
     while True:
