@@ -128,7 +128,7 @@ def handle_all_messages(message):
                 "max_tokens": 16384,
                 "stream": True,
                 # আপনার রিকোয়েস্ট অনুযায়ী থিঙ্কিং অন করা হলো
-                "chat_template_kwargs": {"enable_thinking": True, "clear_thinking": False} 
+                "chat_template_kwargs": {"enable_thinking": False, "clear_thinking": False} 
             }
             chunk_text = ""
             
