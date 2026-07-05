@@ -15,13 +15,14 @@ ALLOWED_USER_ID = 5062314716
 
 # --- NVIDIA NIM API কনফিগারেশন ---
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY") 
+# আপনার পছন্দের হেভিওয়েট/ফ্ল্যাগশিপ মডেল
 NVIDIA_MODEL = "z-ai/glm-5.2" 
 
 bot = telebot.TeleBot(BOT_TOKEN)
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
 
-# --- পার্মানেন্ট মেমোরি ডেটাবেস ---
 DB_FILE = "chat_database.json"
+active_tasks = set() 
 
 def load_memory():
     if os.path.exists(DB_FILE):
@@ -36,11 +37,8 @@ def save_memory(data):
 user_chat_history = load_memory()
 
 def process_text_file(file_content, filename):
-    try:
-        text = file_content.decode('utf-8')
-        return f"\n--- File: {filename} ---\n{text}\n"
-    except:
-        return f"\n[Error reading {filename} as text]\n"
+    try: return f"\n--- File: {filename} ---\n{file_content.decode('utf-8')}\n"
+    except: return f"\n[Error reading {filename}]\n"
 
 def send_full_output(chat_id, text):
     if len(text) <= 4000:
@@ -52,23 +50,23 @@ def send_full_output(chat_id, text):
 
 @bot.message_handler(commands=['clear', 'reset'])
 def clear_memory(message):
-    # যে কেউ তার নিজের চ্যাট ক্লিয়ার করতে পারবে
     chat_id = str(message.chat.id)
     if chat_id in user_chat_history:
         del user_chat_history[chat_id]
         save_memory(user_chat_history)
-    bot.send_message(chat_id, "🧹 আপনার চ্যাট এবং মেমোরি ক্লিয়ার করা হয়েছে! নতুন প্রজেক্ট শুরু করতে পারেন।")
+    bot.send_message(chat_id, "🧹 আপনার চ্যাট এবং মেমোরি ক্লিয়ার করা হয়েছে! নতুন হেভিওয়েট প্রজেক্ট শুরু করতে পারেন।")
 
 @bot.message_handler(content_types=['text', 'document'])
 def handle_all_messages(message):
     chat_id = str(message.chat.id)
     
-    # ক্যাপশন বা টেক্সট নেওয়া
-    prompt_text = message.text or message.caption or ""
-
+    if chat_id in active_tasks: return 
+    active_tasks.add(chat_id) 
+    
     try:
-        # --- ১. ফাইল প্রসেসিং ---
+        prompt_text = message.text or message.caption or ""
         file_context = ""
+        
         if message.document:
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
@@ -90,17 +88,18 @@ def handle_all_messages(message):
                 prompt_text += "\n\nAnalyze the uploaded files. If they contain a prompt/instruction, execute it immediately. If it's just raw data/code, acknowledge that you have saved it to memory and wait for my next command."
 
         if not prompt_text.strip():
+            active_tasks.remove(chat_id) 
             return
 
-        bot.send_message(chat_id, "Processing your request with NVIDIA API... (Large tasks will auto-continue in background) ⏳")
+        bot.send_message(chat_id, f"Processing with {NVIDIA_MODEL} (Thinking Enabled)... ⏳")
 
-        # --- ২. হিস্ট্রি ম্যানেজমেন্ট ---
+        # মডেলকে কড়া নির্দেশ দেওয়া হয়েছে যেন সে ফাঁকা ট্যাগ না দেয়
         system_instruction = (
-            "You are an expert AI coding assistant. "
-            "You have a perfect memory of this chat. Always refer to the context provided. "
-            "If the user asks for files or a ZIP, you MUST output the files using this exact XML structure:\n"
-            '<file name="exact_filename.extension">\n[write the complete file content here]\n</file>\n'
-            "Do NOT use markdown code blocks outside the XML tags. "
+            "You are an elite, frontier AI coding architect. You handle massive codebases perfectly. "
+            "First, think thoroughly about the solution. Once you are done thinking, you MUST output the actual code. "
+            "Whenever you provide files, you MUST use this exact XML structure:\n"
+            '<file name="exact_filename.extension">\n[write the complete, fully functional code here]\n</file>\n'
+            "CRITICAL WARNING: NEVER output empty <file> tags. The code MUST be inside the tags. Do NOT use markdown code blocks outside the tags."
         )
 
         if chat_id not in user_chat_history:
@@ -108,15 +107,11 @@ def handle_all_messages(message):
         
         user_chat_history[chat_id].append({"role": "user", "content": prompt_text})
         
-        if len(user_chat_history[chat_id]) > 20: 
-            user_chat_history[chat_id] = [user_chat_history[chat_id][0]] + user_chat_history[chat_id][-19:]
+        if len(user_chat_history[chat_id]) > 10: 
+            user_chat_history[chat_id] = [user_chat_history[chat_id][0]] + user_chat_history[chat_id][-9:]
 
-        # --- ৩. Auto-Continue Loop (Background) ---
         api_url = "https://integrate.api.nvidia.com/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {NVIDIA_API_KEY}", 
-            "Content-Type": "application/json"
-        }
+        headers = {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"}
         
         final_full_response = ""
         current_payload_messages = user_chat_history[chat_id].copy()
@@ -132,11 +127,12 @@ def handle_all_messages(message):
                 "top_p": 1,
                 "max_tokens": 16384,
                 "stream": True,
-                "chat_template_kwargs": {"enable_thinking": True, "clear_thinking": False}
+                # আপনার রিকোয়েস্ট অনুযায়ী থিঙ্কিং অন করা হলো
+                "chat_template_kwargs": {"enable_thinking": True, "clear_thinking": False} 
             }
             chunk_text = ""
             
-            response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=1050)
+            response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=300)
             
             if response.status_code == 200:
                 for line in response.iter_lines():
@@ -150,81 +146,86 @@ def handle_all_messages(message):
                                 if "choices" in chunk and len(chunk["choices"]) > 0:
                                     delta = chunk["choices"][0].get("delta", {})
                                     
-                                    # NVIDIA-এর reasoning এবং content এক্সট্রাক্ট করা
+                                    # থিঙ্কিং এবং কন্টেন্ট দুটোই এক্সট্রাক্ট করা হচ্ছে
                                     reasoning = delta.get("reasoning_content", "")
                                     content = delta.get("content", "")
                                     
-                                    if reasoning:
-                                        chunk_text += reasoning
-                                    if content:
-                                        chunk_text += content
+                                    if reasoning: chunk_text += reasoning
+                                    if content: chunk_text += content
                             except: pass
             else:
                 bot.send_message(chat_id, f"API Error: {response.status_code}\n{response.text}")
                 user_chat_history[chat_id].pop()
-                return
+                break 
 
             final_full_response += chunk_text
             
-            # চেক করা হচ্ছে কোনো ফাইল ট্যাগ অসম্পূর্ণ আছে কি না
             unclosed_xml = final_full_response.count('<file name=') > final_full_response.count('</file>')
             
             if unclosed_xml and loop_count < MAX_AUTO_CONTINUE:
                 loop_count += 1
                 current_payload_messages.append({"role": "assistant", "content": chunk_text})
-                current_payload_messages.append({"role": "user", "content": "continue exactly from where you stopped. Do not repeat previous text."})
+                current_payload_messages.append({"role": "user", "content": "continue exactly from where you stopped. Make sure the code is inside the <file> tag."})
             else:
-                break # কাজ শেষ
+                break 
 
         if not final_full_response.strip():
             bot.send_message(chat_id, "❌ কোনো ডেটা জেনারেট হয়নি। আবার চেষ্টা করুন।")
             user_chat_history[chat_id].pop()
-            return
-
-        # ফাইনাল রেসপন্স মেমোরিতে সেভ করা
-        user_chat_history[chat_id].append({"role": "assistant", "content": final_full_response})
-        save_memory(user_chat_history)
-
-        # --- ৪. ফাইল পার্সিং এবং আউটপুট ---
-        file_matches = re.findall(r'<file name="([^"]+)">([\s\S]*?)(?:</file>|$)', final_full_response, re.IGNORECASE)
-        MD_TICKS = chr(96) * 3 
-        
-        if file_matches:
-            user_wants_zip = 'zip' in prompt_text.lower()
-            
-            if len(file_matches) > 1 or user_wants_zip:
-                zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                    for filename, content in file_matches:
-                        content = content.strip()
-                        if content.startswith(MD_TICKS): content = content.split('\n', 1)[-1]
-                        if content.endswith(MD_TICKS): content = content.rsplit('\n', 1)[0]
-                        zip_file.writestr(filename, content.strip())
-                
-                zip_buffer.seek(0)
-                zip_buffer.name = "project_files.zip"
-                bot.send_document(chat_id, zip_buffer, caption="✅ Background task completed. Here is your ZIP file.")
-                
-            else:
-                filename = file_matches[0][0]
-                content = file_matches[0][1].strip()
-                if content.startswith(MD_TICKS): content = content.split('\n', 1)[-1]
-                if content.endswith(MD_TICKS): content = content.rsplit('\n', 1)[0]
-                    
-                file_buffer = io.BytesIO(content.strip().encode('utf-8'))
-                file_buffer.name = filename
-                bot.send_document(chat_id, file_buffer, caption=f"✅ Background task completed. Here is your {filename} file.")
         else:
-            send_full_output(chat_id, final_full_response)
+            user_chat_history[chat_id].append({"role": "assistant", "content": final_full_response})
+            save_memory(user_chat_history)
+
+            # --- Empty File Protector Logic ---
+            file_matches = re.findall(r'<file name="([^"]+)">([\s\S]*?)(?:</file>|$)', final_full_response, re.IGNORECASE)
+            MD_TICKS = chr(96) * 3 
             
+            valid_files = []
+            if file_matches:
+                for filename, content in file_matches:
+                    content = content.strip()
+                    if content.startswith(MD_TICKS): content = content.split('\n', 1)[-1]
+                    if content.endswith(MD_TICKS): content = content.rsplit('\n', 1)[0]
+                    content = content.strip()
+                    
+                    if content: # ফাইলের ভেতর কোড থাকলে তবেই অ্যাক্সেপ্ট করবে
+                        valid_files.append((filename, content))
+            
+            if valid_files:
+                user_wants_zip = 'zip' in prompt_text.lower()
+                
+                if len(valid_files) > 1 or user_wants_zip:
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        for filename, content in valid_files:
+                            zip_file.writestr(filename, content)
+                    
+                    zip_buffer.seek(0)
+                    zip_buffer.name = "project_files.zip"
+                    bot.send_document(chat_id, zip_buffer, caption="✅ টাস্ক সম্পন্ন হয়েছে। আপনার ZIP ফাইল রেডি।")
+                else:
+                    filename = valid_files[0][0]
+                    file_buffer = io.BytesIO(valid_files[0][1].encode('utf-8'))
+                    file_buffer.name = filename
+                    bot.send_document(chat_id, file_buffer, caption=f"✅ টাস্ক সম্পন্ন হয়েছে। আপনার {filename} ফাইল রেডি।")
+            else:
+                if file_matches: # ট্যাগ ছিল, কিন্তু ভেতরটা ফাঁকা
+                    bot.send_message(chat_id, "⚠️ এআই ফাইল জেনারেট করার চেষ্টা করেছিল, কিন্তু ফাইলের ভেতর কোনো কোড ছিল না। বটের রেসপন্স নিচে দেওয়া হলো:\n\n" + final_full_response[:3000])
+                else:
+                    send_full_output(chat_id, final_full_response)
+                
     except Exception as e:
         bot.send_message(chat_id, f"An error occurred: {str(e)}")
+        
+    finally:
+        if chat_id in active_tasks:
+            active_tasks.remove(chat_id)
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is securely running 24/7 with NVIDIA NIM API & Memory!"
+    return "Bot is securely running 24/7 with Heavyweight API!"
 
 def run_bot():
     while True:
