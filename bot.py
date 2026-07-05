@@ -13,10 +13,9 @@ from threading import Thread
 BOT_TOKEN = os.environ.get("BOT_TOKEN") 
 ALLOWED_USER_ID = 5062314716 
 
-# --- Cloudflare AI কনফিগারেশন ---
-CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID") 
-CF_API_TOKEN = os.environ.get("CF_API_TOKEN")   
-CF_MODEL = "@cf/zai-org/glm-5.2" 
+# --- NVIDIA NIM API কনফিগারেশন ---
+NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY") 
+NVIDIA_MODEL = "z-ai/glm-5.2" 
 
 bot = telebot.TeleBot(BOT_TOKEN)
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
@@ -93,7 +92,7 @@ def handle_all_messages(message):
         if not prompt_text.strip():
             return
 
-        bot.send_message(chat_id, "Processing your request... (Large tasks will auto-continue in background) ⏳")
+        bot.send_message(chat_id, "Processing your request with NVIDIA API... (Large tasks will auto-continue in background) ⏳")
 
         # --- ২. হিস্ট্রি ম্যানেজমেন্ট ---
         system_instruction = (
@@ -109,21 +108,32 @@ def handle_all_messages(message):
         
         user_chat_history[chat_id].append({"role": "user", "content": prompt_text})
         
-        if len(user_chat_history[chat_id]) > 20: # মেমোরি উইন্ডো বড় করা হয়েছে
+        if len(user_chat_history[chat_id]) > 20: 
             user_chat_history[chat_id] = [user_chat_history[chat_id][0]] + user_chat_history[chat_id][-19:]
 
         # --- ৩. Auto-Continue Loop (Background) ---
-        api_url = "https://api.cloudflare.com/client/v4/accounts/" + str(CF_ACCOUNT_ID) + "/ai/run/" + str(CF_MODEL)
-        headers = {"Authorization": "Bearer " + str(CF_API_TOKEN), "Content-Type": "application/json"}
+        api_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {NVIDIA_API_KEY}", 
+            "Content-Type": "application/json"
+        }
         
         final_full_response = ""
         current_payload_messages = user_chat_history[chat_id].copy()
         
         loop_count = 0
-        MAX_AUTO_CONTINUE = 4 # সর্বোচ্চ ৪ বার ব্যাকগ্রাউন্ডে কন্টিনিউ করবে
+        MAX_AUTO_CONTINUE = 4 
 
         while loop_count <= MAX_AUTO_CONTINUE:
-            payload = {"messages": current_payload_messages, "stream": True}
+            payload = {
+                "model": NVIDIA_MODEL,
+                "messages": current_payload_messages,
+                "temperature": 1,
+                "top_p": 1,
+                "max_tokens": 16384,
+                "stream": True,
+                "chat_template_kwargs": {"enable_thinking": True, "clear_thinking": False}
+            }
             chunk_text = ""
             
             response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=150)
@@ -134,13 +144,20 @@ def handle_all_messages(message):
                         decoded_line = line.decode('utf-8')
                         if decoded_line.startswith("data: "):
                             data_str = decoded_line[6:]
-                            if data_str == "[DONE]": break
+                            if data_str.strip() == "[DONE]": break
                             try:
                                 chunk = json.loads(data_str)
-                                if "response" in chunk: chunk_text += chunk["response"]
-                                elif "choices" in chunk and len(chunk["choices"]) > 0:
+                                if "choices" in chunk and len(chunk["choices"]) > 0:
                                     delta = chunk["choices"][0].get("delta", {})
-                                    if "content" in delta: chunk_text += delta["content"]
+                                    
+                                    # NVIDIA-এর reasoning এবং content এক্সট্রাক্ট করা
+                                    reasoning = delta.get("reasoning_content", "")
+                                    content = delta.get("content", "")
+                                    
+                                    if reasoning:
+                                        chunk_text += reasoning
+                                    if content:
+                                        chunk_text += content
                             except: pass
             else:
                 bot.send_message(chat_id, f"API Error: {response.status_code}\n{response.text}")
@@ -207,7 +224,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is securely running 24/7 with Memory & Auto-Continue!"
+    return "Bot is securely running 24/7 with NVIDIA NIM API & Memory!"
 
 def run_bot():
     while True:
