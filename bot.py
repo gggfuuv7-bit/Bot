@@ -6,21 +6,26 @@ import requests
 import time
 import json
 import re
+import sys
 from flask import Flask
 from threading import Thread
 
 # --- কনফিগারেশন ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN") 
+if not BOT_TOKEN:
+    print("❌ ERROR: BOT_TOKEN is missing!")
+    sys.exit(1)
+
 ALLOWED_USER_ID = 5062314716 
 
-# --- NVIDIA NIM API কনফিগারেশন ---
-NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY") 
-# আপনার পছন্দের হেভিওয়েট/ফ্ল্যাগশিপ মডেল
-NVIDIA_MODEL = "z-ai/glm-5.2" 
+# --- Bluesminds API কনফিগারেশন ---
+BLUESMINDS_API_KEY = os.environ.get("BLUESMINDS_API_KEY") 
+BLUESMINDS_MODEL = "glm-5.2:cloud" # স্ক্রিনশট অনুযায়ী মডেলের নাম
 
 bot = telebot.TeleBot(BOT_TOKEN)
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
 
+# --- পার্মানেন্ট মেমোরি এবং টাস্ক লক ---
 DB_FILE = "chat_database.json"
 active_tasks = set() 
 
@@ -54,7 +59,7 @@ def clear_memory(message):
     if chat_id in user_chat_history:
         del user_chat_history[chat_id]
         save_memory(user_chat_history)
-    bot.send_message(chat_id, "🧹 আপনার চ্যাট এবং মেমোরি ক্লিয়ার করা হয়েছে! নতুন হেভিওয়েট প্রজেক্ট শুরু করতে পারেন।")
+    bot.send_message(chat_id, "🧹 আপনার চ্যাট এবং মেমোরি ক্লিয়ার করা হয়েছে! নতুন প্রজেক্ট শুরু করতে পারেন।")
 
 @bot.message_handler(content_types=['text', 'document'])
 def handle_all_messages(message):
@@ -91,12 +96,10 @@ def handle_all_messages(message):
             active_tasks.remove(chat_id) 
             return
 
-        bot.send_message(chat_id, f"Processing with {NVIDIA_MODEL} (Thinking Enabled)... ⏳")
+        bot.send_message(chat_id, f"Processing with {BLUESMINDS_MODEL} (Bluesminds API)... ⏳")
 
-        # মডেলকে কড়া নির্দেশ দেওয়া হয়েছে যেন সে ফাঁকা ট্যাগ না দেয়
         system_instruction = (
-            "You are an elite, frontier AI coding architect. You handle massive codebases perfectly. "
-            "First, think thoroughly about the solution. Once you are done thinking, you MUST output the actual code. "
+            "You are an elite AI coding architect. You handle massive codebases perfectly. "
             "Whenever you provide files, you MUST use this exact XML structure:\n"
             '<file name="exact_filename.extension">\n[write the complete, fully functional code here]\n</file>\n'
             "CRITICAL WARNING: NEVER output empty <file> tags. The code MUST be inside the tags. Do NOT use markdown code blocks outside the tags."
@@ -110,8 +113,12 @@ def handle_all_messages(message):
         if len(user_chat_history[chat_id]) > 10: 
             user_chat_history[chat_id] = [user_chat_history[chat_id][0]] + user_chat_history[chat_id][-9:]
 
-        api_url = "https://integrate.api.nvidia.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"}
+        # OpenAI-Compatible API Endpoint for Bluesminds
+        api_url = "https://api.bluesminds.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {BLUESMINDS_API_KEY}", 
+            "Content-Type": "application/json"
+        }
         
         final_full_response = ""
         current_payload_messages = user_chat_history[chat_id].copy()
@@ -121,18 +128,14 @@ def handle_all_messages(message):
 
         while loop_count <= MAX_AUTO_CONTINUE:
             payload = {
-                "model": NVIDIA_MODEL,
+                "model": BLUESMINDS_MODEL,
                 "messages": current_payload_messages,
-                "temperature": 1,
-                "top_p": 1,
-                "max_tokens": 16384,
-                "stream": True,
-                # আপনার রিকোয়েস্ট অনুযায়ী থিঙ্কিং অন করা হলো
-                "chat_template_kwargs": {"enable_thinking": False, "clear_thinking": False} 
+                "temperature": 0.5,
+                "stream": True
             }
             chunk_text = ""
             
-            response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=300)
+            response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=120)
             
             if response.status_code == 200:
                 for line in response.iter_lines():
@@ -145,12 +148,7 @@ def handle_all_messages(message):
                                 chunk = json.loads(data_str)
                                 if "choices" in chunk and len(chunk["choices"]) > 0:
                                     delta = chunk["choices"][0].get("delta", {})
-                                    
-                                    # থিঙ্কিং এবং কন্টেন্ট দুটোই এক্সট্রাক্ট করা হচ্ছে
-                                    reasoning = delta.get("reasoning_content", "")
                                     content = delta.get("content", "")
-                                    
-                                    if reasoning: chunk_text += reasoning
                                     if content: chunk_text += content
                             except: pass
             else:
@@ -188,7 +186,7 @@ def handle_all_messages(message):
                     if content.endswith(MD_TICKS): content = content.rsplit('\n', 1)[0]
                     content = content.strip()
                     
-                    if content: # ফাইলের ভেতর কোড থাকলে তবেই অ্যাক্সেপ্ট করবে
+                    if content:
                         valid_files.append((filename, content))
             
             if valid_files:
@@ -209,7 +207,7 @@ def handle_all_messages(message):
                     file_buffer.name = filename
                     bot.send_document(chat_id, file_buffer, caption=f"✅ টাস্ক সম্পন্ন হয়েছে। আপনার {filename} ফাইল রেডি।")
             else:
-                if file_matches: # ট্যাগ ছিল, কিন্তু ভেতরটা ফাঁকা
+                if file_matches:
                     bot.send_message(chat_id, "⚠️ এআই ফাইল জেনারেট করার চেষ্টা করেছিল, কিন্তু ফাইলের ভেতর কোনো কোড ছিল না। বটের রেসপন্স নিচে দেওয়া হলো:\n\n" + final_full_response[:3000])
                 else:
                     send_full_output(chat_id, final_full_response)
@@ -225,7 +223,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is securely running 24/7 with Heavyweight API!"
+    return "Bot is securely running 24/7 with Bluesminds API!"
 
 def run_bot():
     while True:
