@@ -20,7 +20,7 @@ ALLOWED_USER_ID = 5062314716
 
 # --- Bluesminds API কনফিগারেশন ---
 BLUESMINDS_API_KEY = os.environ.get("BLUESMINDS_API_KEY") 
-BLUESMINDS_MODEL = "glm-5.2:cloud" # স্ক্রিনশট অনুযায়ী মডেলের নাম
+BLUESMINDS_MODEL = "qwen3.6" # স্ক্রিনশট অনুযায়ী মডেলের নাম
 
 bot = telebot.TeleBot(BOT_TOKEN)
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
