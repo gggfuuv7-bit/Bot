@@ -136,7 +136,7 @@ def handle_all_messages(message):
             }
             chunk_text = ""
             
-            response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=150)
+            response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=1050)
             
             if response.status_code == 200:
                 for line in response.iter_lines():
