@@ -18,9 +18,9 @@ if not BOT_TOKEN:
 
 ALLOWED_USER_ID = 5062314716 
 
-# --- Featherless API কনফিগারেশন ---
-FEATHERLESS_API_KEY = os.environ.get("FEATHERLESS_API_KEY") 
-FEATHERLESS_MODEL = "zai-org/GLM-5.2" # স্ক্রিনশট অনুযায়ী মডেলের নাম
+# --- Bluesminds API কনফিগারেশন ---
+BLUESMINDS_API_KEY = os.environ.get("BLUESMINDS_API_KEY") 
+BLUESMINDS_MODEL = "glm-5.2:cloud" # স্ক্রিনশট অনুযায়ী মডেলের নাম
 
 bot = telebot.TeleBot(BOT_TOKEN)
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
@@ -96,7 +96,7 @@ def handle_all_messages(message):
             active_tasks.remove(chat_id) 
             return
 
-        bot.send_message(chat_id, f"Processing with {FEATHERLESS_MODEL} (Featherless.ai)... ⏳")
+        bot.send_message(chat_id, f"Processing with {BLUESMINDS_MODEL} (Bluesminds API)... ⏳")
 
         system_instruction = (
             "You are an elite AI coding architect. You handle massive codebases perfectly. "
@@ -113,10 +113,10 @@ def handle_all_messages(message):
         if len(user_chat_history[chat_id]) > 10: 
             user_chat_history[chat_id] = [user_chat_history[chat_id][0]] + user_chat_history[chat_id][-9:]
 
-        # OpenAI-Compatible API Endpoint for Featherless
-        api_url = "https://api.featherless.ai/v1/chat/completions"
+        # OpenAI-Compatible API Endpoint for Bluesminds
+        api_url = "https://api.bluesminds.com/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {FEATHERLESS_API_KEY}", 
+            "Authorization": f"Bearer {BLUESMINDS_API_KEY}", 
             "Content-Type": "application/json"
         }
         
@@ -128,7 +128,7 @@ def handle_all_messages(message):
 
         while loop_count <= MAX_AUTO_CONTINUE:
             payload = {
-                "model": FEATHERLESS_MODEL,
+                "model": BLUESMINDS_MODEL,
                 "messages": current_payload_messages,
                 "temperature": 0.5,
                 "stream": True
@@ -169,8 +169,7 @@ def handle_all_messages(message):
 
         if not final_full_response.strip():
             bot.send_message(chat_id, "❌ কোনো ডেটা জেনারেট হয়নি। আবার চেষ্টা করুন।")
-            if len(user_chat_history[chat_id]) > 1:
-                user_chat_history[chat_id].pop()
+            user_chat_history[chat_id].pop()
         else:
             user_chat_history[chat_id].append({"role": "assistant", "content": final_full_response})
             save_memory(user_chat_history)
@@ -224,7 +223,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is securely running 24/7 with Featherless API!"
+    return "Bot is securely running 24/7 with Bluesminds API!"
 
 def run_bot():
     while True:
