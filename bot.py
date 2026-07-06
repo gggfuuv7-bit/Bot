@@ -20,12 +20,11 @@ ALLOWED_USER_ID = 5062314716
 
 # --- Featherless API কনফিগারেশন ---
 FEATHERLESS_API_KEY = os.environ.get("FEATHERLESS_API_KEY") 
-FEATHERLESS_MODEL = "zai-org/GLM-5.2" # স্ক্রিনশট অনুযায়ী মডেলের নাম
+FEATHERLESS_MODEL = "zai-org/GLM-5.2" 
 
 bot = telebot.TeleBot(BOT_TOKEN)
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
 
-# --- পার্মানেন্ট মেমোরি এবং টাস্ক লক ---
 DB_FILE = "chat_database.json"
 active_tasks = set() 
 
@@ -96,13 +95,15 @@ def handle_all_messages(message):
             active_tasks.remove(chat_id) 
             return
 
-        bot.send_message(chat_id, f"Processing with {FEATHERLESS_MODEL} (Featherless.ai)... ⏳")
+        bot.send_message(chat_id, f"Processing with {FEATHERLESS_MODEL}... ⏳")
 
+        # সিস্টেম প্রম্পট নরম করা হয়েছে যাতে এআই হ্যাং না হয়
         system_instruction = (
-            "You are an elite AI coding architect. You handle massive codebases perfectly. "
-            "Whenever you provide files, you MUST use this exact XML structure:\n"
-            '<file name="exact_filename.extension">\n[write the complete, fully functional code here]\n</file>\n'
-            "CRITICAL WARNING: NEVER output empty <file> tags. The code MUST be inside the tags. Do NOT use markdown code blocks outside the tags."
+            "You are a helpful and elite AI coding assistant. "
+            "Please analyze the provided files and fulfill the user's request. "
+            "When you need to generate or modify files, output them strictly in this format:\n"
+            '<file name="exact_filename.extension">\n[write the complete code here]\n</file>\n'
+            "You may briefly explain your logic before providing the code."
         )
 
         if chat_id not in user_chat_history:
@@ -113,7 +114,6 @@ def handle_all_messages(message):
         if len(user_chat_history[chat_id]) > 10: 
             user_chat_history[chat_id] = [user_chat_history[chat_id][0]] + user_chat_history[chat_id][-9:]
 
-        # OpenAI-Compatible API Endpoint for Featherless
         api_url = "https://api.featherless.ai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {FEATHERLESS_API_KEY}", 
@@ -130,12 +130,13 @@ def handle_all_messages(message):
             payload = {
                 "model": FEATHERLESS_MODEL,
                 "messages": current_payload_messages,
-                "temperature": 0.5,
+                "temperature": 0.6,
                 "stream": True
             }
             chunk_text = ""
             
-            response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=120)
+            # টাইমআউট বাড়িয়ে ৩০০ সেকেন্ড করা হলো
+            response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=300)
             
             if response.status_code == 200:
                 for line in response.iter_lines():
@@ -168,14 +169,13 @@ def handle_all_messages(message):
                 break 
 
         if not final_full_response.strip():
-            bot.send_message(chat_id, "❌ কোনো ডেটা জেনারেট হয়নি। আবার চেষ্টা করুন।")
+            bot.send_message(chat_id, "❌ কোনো ডেটা জেনারেট হয়নি। মডেলটি সম্ভবত ওভারলোডেড। দয়া করে প্রম্পটটি আরেকটু ছোট করে ট্রাই করুন।")
             if len(user_chat_history[chat_id]) > 1:
                 user_chat_history[chat_id].pop()
         else:
             user_chat_history[chat_id].append({"role": "assistant", "content": final_full_response})
             save_memory(user_chat_history)
 
-            # --- Empty File Protector Logic ---
             file_matches = re.findall(r'<file name="([^"]+)">([\s\S]*?)(?:</file>|$)', final_full_response, re.IGNORECASE)
             MD_TICKS = chr(96) * 3 
             
@@ -208,10 +208,7 @@ def handle_all_messages(message):
                     file_buffer.name = filename
                     bot.send_document(chat_id, file_buffer, caption=f"✅ টাস্ক সম্পন্ন হয়েছে। আপনার {filename} ফাইল রেডি।")
             else:
-                if file_matches:
-                    bot.send_message(chat_id, "⚠️ এআই ফাইল জেনারেট করার চেষ্টা করেছিল, কিন্তু ফাইলের ভেতর কোনো কোড ছিল না। বটের রেসপন্স নিচে দেওয়া হলো:\n\n" + final_full_response[:3000])
-                else:
-                    send_full_output(chat_id, final_full_response)
+                send_full_output(chat_id, final_full_response)
                 
     except Exception as e:
         bot.send_message(chat_id, f"An error occurred: {str(e)}")
