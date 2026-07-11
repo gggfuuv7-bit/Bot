@@ -18,7 +18,7 @@ if not BOT_TOKEN:
 
 # --- Bluesminds API কনফিগারেশন ---
 BLUESMINDS_API_KEY = os.environ.get("BLUESMINDS_API_KEY") 
-BLUESMINDS_MODEL = "glm-5.2:cloud" # আপনি চাইলে ড্যাশবোর্ড থেকে অন্য মডেলের নামও দিতে পারেন
+BLUESMINDS_MODEL = "z-ai/glm-5.2" # আপনি চাইলে ড্যাশবোর্ড থেকে অন্য মডেলের নামও দিতে পারেন
 
 bot = telebot.TeleBot(BOT_TOKEN)
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
