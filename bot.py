@@ -16,15 +16,14 @@ if not BOT_TOKEN:
     print("❌ ERROR: BOT_TOKEN is missing!")
     sys.exit(1)
 
-ALLOWED_USER_ID = 5062314716 
-
-# --- Featherless API কনফিগারেশন ---
-FEATHERLESS_API_KEY = os.environ.get("FEATHERLESS_API_KEY") 
-FEATHERLESS_MODEL = "zai-org/GLM-5.2" 
+# --- Bluesminds API কনফিগারেশন ---
+BLUESMINDS_API_KEY = os.environ.get("BLUESMINDS_API_KEY") 
+BLUESMINDS_MODEL = "glm-5.2:cloud" # আপনি চাইলে ড্যাশবোর্ড থেকে অন্য মডেলের নামও দিতে পারেন
 
 bot = telebot.TeleBot(BOT_TOKEN)
 TEXT_EXTENSIONS = ['.txt', '.html', '.css', '.js', '.php', '.sql', '.dart', '.json', '.xml', '.md', '.csv']
 
+# --- পার্মানেন্ট মেমোরি এবং টাস্ক লক ---
 DB_FILE = "chat_database.json"
 active_tasks = set() 
 
@@ -71,6 +70,7 @@ def handle_all_messages(message):
         prompt_text = message.text or message.caption or ""
         file_context = ""
         
+        # ফাইল বা জিপ প্রসেসিং
         if message.document:
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
@@ -95,15 +95,14 @@ def handle_all_messages(message):
             active_tasks.remove(chat_id) 
             return
 
-        bot.send_message(chat_id, f"Processing with {FEATHERLESS_MODEL}... ⏳")
+        bot.send_message(chat_id, f"Processing with {BLUESMINDS_MODEL} (Bluesminds API)... ⏳")
 
-        # সিস্টেম প্রম্পট নরম করা হয়েছে যাতে এআই হ্যাং না হয়
+        # সিস্টেম প্রম্পট একটু নরম করা হয়েছে যাতে মডেল ওভারলোড না হয়
         system_instruction = (
-            "You are a helpful and elite AI coding assistant. "
-            "Please analyze the provided files and fulfill the user's request. "
-            "When you need to generate or modify files, output them strictly in this format:\n"
-            '<file name="exact_filename.extension">\n[write the complete code here]\n</file>\n'
-            "You may briefly explain your logic before providing the code."
+            "You are a highly capable AI coding assistant. Analyze the user's request carefully. "
+            "When providing code files, you MUST strictly use the following XML structure:\n"
+            '<file name="filename.extension">\n[write the complete code here]\n</file>\n'
+            "You can provide brief explanations outside the tags, but the actual code must be inside the <file> tags."
         )
 
         if chat_id not in user_chat_history:
@@ -111,12 +110,14 @@ def handle_all_messages(message):
         
         user_chat_history[chat_id].append({"role": "user", "content": prompt_text})
         
+        # মেমোরি লিমিট (শেষ ১০টি মেসেজ রাখবে)
         if len(user_chat_history[chat_id]) > 10: 
             user_chat_history[chat_id] = [user_chat_history[chat_id][0]] + user_chat_history[chat_id][-9:]
 
-        api_url = "https://api.featherless.ai/v1/chat/completions"
+        # Bluesminds API কল
+        api_url = "https://api.bluesminds.com/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {FEATHERLESS_API_KEY}", 
+            "Authorization": f"Bearer {BLUESMINDS_API_KEY}", 
             "Content-Type": "application/json"
         }
         
@@ -128,15 +129,14 @@ def handle_all_messages(message):
 
         while loop_count <= MAX_AUTO_CONTINUE:
             payload = {
-                "model": FEATHERLESS_MODEL,
+                "model": BLUESMINDS_MODEL,
                 "messages": current_payload_messages,
-                "temperature": 0.6,
+                "temperature": 0.5,
                 "stream": True
             }
             chunk_text = ""
             
-            # টাইমআউট বাড়িয়ে ৩০০ সেকেন্ড করা হলো
-            response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=300)
+            response = requests.post(api_url, headers=headers, json=payload, stream=True, timeout=120)
             
             if response.status_code == 200:
                 for line in response.iter_lines():
@@ -159,6 +159,7 @@ def handle_all_messages(message):
 
             final_full_response += chunk_text
             
+            # অটো-কন্টিনিউ লজিক
             unclosed_xml = final_full_response.count('<file name=') > final_full_response.count('</file>')
             
             if unclosed_xml and loop_count < MAX_AUTO_CONTINUE:
@@ -169,13 +170,14 @@ def handle_all_messages(message):
                 break 
 
         if not final_full_response.strip():
-            bot.send_message(chat_id, "❌ কোনো ডেটা জেনারেট হয়নি। মডেলটি সম্ভবত ওভারলোডেড। দয়া করে প্রম্পটটি আরেকটু ছোট করে ট্রাই করুন।")
+            bot.send_message(chat_id, "❌ কোনো ডেটা জেনারেট হয়নি। আবার চেষ্টা করুন।")
             if len(user_chat_history[chat_id]) > 1:
                 user_chat_history[chat_id].pop()
         else:
             user_chat_history[chat_id].append({"role": "assistant", "content": final_full_response})
             save_memory(user_chat_history)
 
+            # --- ফাইল জেনারেটর এবং ZIP লজিক ---
             file_matches = re.findall(r'<file name="([^"]+)">([\s\S]*?)(?:</file>|$)', final_full_response, re.IGNORECASE)
             MD_TICKS = chr(96) * 3 
             
@@ -217,11 +219,12 @@ def handle_all_messages(message):
         if chat_id in active_tasks:
             active_tasks.remove(chat_id)
 
+# --- Flask Server (For 24/7 Hosting) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is securely running 24/7 with Featherless API!"
+    return "Bot is running perfectly with Bluesminds API!"
 
 def run_bot():
     while True:
